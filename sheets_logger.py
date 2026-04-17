@@ -83,9 +83,37 @@ def _init_sheets():
                 _spreadsheet = None
 
         if _spreadsheet is None:
-            _spreadsheet = _gc.create(f"{bot_nev} — Kereskedési napló")
-            new_id = _spreadsheet.id
-            logger.info(f"Új Sheets létrehozva: {_spreadsheet.title} | ID: {new_id}")
+            # Mappa ID — ide kerül a Sheets fájl a Drive-ban
+            drive_folder_id = getattr(config, 'SHEETS_FOLDER_ID', None)
+
+            if drive_folder_id:
+                # Létrehozás adott mappában a Drive API-val
+                drive = _gc.auth.authorized_session if hasattr(_gc, 'auth') else None
+                file_metadata = {
+                    "name": f"{bot_nev} — Kereskedési napló",
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                    "parents": [drive_folder_id],
+                }
+                from googleapiclient.discovery import build
+                from google.oauth2.service_account import Credentials as _Creds
+                _creds2 = _Creds.from_service_account_file(creds_file, scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ])
+                drive_service = build("drive", "v3", credentials=_creds2)
+                created = drive_service.files().create(
+                    body=file_metadata,
+                    fields="id"
+                ).execute()
+                new_id = created.get("id")
+                _spreadsheet = _gc.open_by_key(new_id)
+                logger.info(f"Új Sheets létrehozva mappában: {_spreadsheet.title} | ID: {new_id}")
+            else:
+                # Létrehozás gyökér mappában
+                _spreadsheet = _gc.create(f"{bot_nev} — Kereskedési napló")
+                new_id = _spreadsheet.id
+                logger.info(f"Új Sheets létrehozva: {_spreadsheet.title} | ID: {new_id}")
+
             logger.info(f"Írd be a .env fájlba: SHEETS_ID={new_id}")
 
         # Megosztás a személyes email-lel
