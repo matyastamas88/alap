@@ -40,21 +40,10 @@ def parse_signal(text: str) -> TradeSignal | None:
 
     entry_low = entry_high = None
 
-    # --- 1) Entry tartomány keresése több formátumban ---
-    # Formátumok, amiket kezelünk:
-    #   "Entry: 4840/4835"
-    #   "Entry Price\n4840/4835"
-    #   "Entry: 4840-4835"
-    #   "SELL XAUUSD @ 4823-4830"
-    #   "BUY XAUUSD @ 4823/4830"
-    #   "SELL @ 4823-4830"
-    #   "SELL XAUUSD 4823-4830"   (se entry, se @)
     range_patterns = [
-        # "entry" kulcsszó után (kettőspont, pont, kötőjel is megengedett közte)
+        r'\bat\s+(\d{3,5}(?:\.\d+)?)\s*[\/\-]\s*(\d{3,5}(?:\.\d+)?)',
         r'entry[\w\s:\.\-]{0,20}?\n?\s*(\d{3,5}(?:\.\d+)?)\s*[\/\-]\s*(\d{3,5}(?:\.\d+)?)',
-        # "@" jel után (pl. SELL XAUUSD @ 4823-4830)
         r'@\s*(\d{3,5}(?:\.\d+)?)\s*[\/\-]\s*(\d{3,5}(?:\.\d+)?)',
-        # BUY/SELL (+ opcionális XAUUSD/GOLD) után közvetlenül
         r'(?:BUY|SELL)(?:\s+(?:XAUUSD|GOLD|XAU))?\s*[:@]?\s*(\d{3,5}(?:\.\d+)?)\s*[\/\-]\s*(\d{3,5}(?:\.\d+)?)',
     ]
 
@@ -68,8 +57,8 @@ def parse_signal(text: str) -> TradeSignal | None:
         a, b = float(range_match.group(1)), float(range_match.group(2))
         entry_low, entry_high = min(a, b), max(a, b)
     else:
-        # --- 2) Egyetlen entry ár keresése több formátumban ---
         single_patterns = [
+            r'\bat\s+(\d{3,5}(?:\.\d+)?)',
             r'entry[\w\s:\.\-]{0,20}?\n?\s*(\d{3,5}(?:\.\d+)?)',
             r'@\s*(\d{3,5}(?:\.\d+)?)',
             r'(?:BUY|SELL)(?:\s+(?:XAUUSD|GOLD|XAU))?\s*[:@]?\s*(\d{3,5}(?:\.\d+)?)',
@@ -84,9 +73,7 @@ def parse_signal(text: str) -> TradeSignal | None:
         logger.warning("Entry ár nem található a signálban.")
         return None
 
-    # --- 3) TP szintek ---
     tp_levels = []
-    # Kezeli: "TP1: 4817", "• TP1: 4817", "TP 4817", "Take Profit 1: 4817"
     tp_matches = re.findall(r'TP\s*\d*[:\s\-•]*\s*(\d{3,5}(?:\.\d+)?)', text, re.IGNORECASE)
     for v in tp_matches:
         tp_levels.append(float(v))
@@ -95,9 +82,7 @@ def parse_signal(text: str) -> TradeSignal | None:
         logger.warning("TP szintek nem találhatók a signálban.")
         return None
 
-    # --- 4) Stop Loss ---
     sl = None
-    # Kezeli: "SL: 4840", "Stop Loss: 4840", "🛑 Stop Loss: 4840", "SL 4840"
     sl_match = re.search(
         r'(?:stop\s*loss|\bsl\b)\s*[:\-•]?\s*(\d{3,5}(?:\.\d+)?)',
         text, re.IGNORECASE
