@@ -20,7 +20,7 @@ from mt5_trader import connect as mt5_connect, disconnect as mt5_disconnect
 from mt5_trader import place_order, set_notifier as mt5_set_notifier, close_all_positions
 from position_manager import register_deal, run_monitor
 from notifier import notify_trade_opened, notify_trade_failed, notify_pending_opened, send_notification
-from sheets_logger import log_trade, log_skipped_signal
+from sheets_logger import log_trade, log_skipped_signal, init_on_startup as sheets_init
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -610,6 +610,9 @@ async def run_bot():
         f"----------------------------"
         f"{settings_info}"
     )
+
+    # Google Sheets inicializalas indulaskor
+    sheets_init()
 
     monitor_task   = asyncio.create_task(run_monitor())
     heartbeat_task = asyncio.create_task(run_heartbeat())

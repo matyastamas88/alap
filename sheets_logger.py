@@ -254,6 +254,22 @@ def _frissit_napi_bontas():
 
 # ── Publikus függvények ───────────────────────────────────────────────────────
 
+def init_on_startup():
+    """
+    Bot indulaskor hivodik — inicializalja a Sheets kapcsolatot
+    es kiirja a logba a Sheets ID-t hogy be lehessen masolni a .env-be.
+    """
+    logger.info("Google Sheets inicializalas...")
+    if _init_sheets():
+        logger.info(f"✅ Google Sheets aktiv!")
+        logger.info(f"📊 Sheets neve: {_spreadsheet.title}")
+        logger.info(f"🔑 Sheets ID: {_spreadsheet.id}")
+        logger.info(f"🔗 Sheets URL: https://docs.google.com/spreadsheets/d/{_spreadsheet.id}")
+        logger.info(f"   >>> Masold be a .env fajlba: SHEETS_ID={_spreadsheet.id} <<<")
+    else:
+        logger.warning("⚠️ Google Sheets NEM aktiv — ellenorizd a credentials fajlt es a .env beallitasokat.")
+
+
 def log_trade(deal: dict):
     """
     Pozíció nyitásakor hívódik — beírja az adatokat a Kereskedések lapra.
