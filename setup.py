@@ -191,30 +191,6 @@ def main():
     mozgo_sl = kerd_igen_nem("  Mozgó SL-t szeretnél? (i/n): ")
     settings["MOZGO_SL_ENABLED"] = mozgo_sl
 
-    if mozgo_sl:
-        clear()
-        print_header()
-        print("3a. lépés: Mozgó SL — melyik TP-nél mozduljon először?")
-        print("-" * 55)
-        print()
-        print("  Ez azt jelenti, hogy melyik TP elérése után kerüljön")
-        print("  az SL az entry szintre (break-even).")
-        print()
-        print("  Példa ha SL_MOZGAS_ELSO_TP = 3:")
-        print("    TP3 elérve → SL = Entry (break-even)")
-        print("    TP4 elérve → SL = TP1")
-        print("    TP5 elérve → SL = TP2")
-        print("    stb.")
-        print()
-        print("  Ha csak TP3-ig megy a pozíció és ezt 3-ra állítod,")
-        print("  az SL NEM mozdul (mert TP3 = a pozíció zárul).")
-        print("  Ilyenkor válassz kisebb számot (pl. 1 vagy 2).")
-        print()
-        sl_elso_tp = kerd_int("  SL először mozdul TP szintnél (1-9): ", 1, 9)
-        settings["SL_MOZGAS_ELSO_TP"] = sl_elso_tp
-    else:
-        settings["SL_MOZGAS_ELSO_TP"] = 3  # alapértelmezett, nem használt
-
     # ── 4. NAPI VESZTESÉG LIMIT ───────────────────────────────────────────────
     clear()
     print_header()
@@ -251,6 +227,153 @@ def main():
     settings["TRADE_HOURS_ENABLED"] = False
     settings["TRADE_HOUR_START"]    = 0
     settings["TRADE_HOUR_END"]      = 24
+
+
+    # ── 6. TECHNIKAI SZŰRŐK ───────────────────────────────────────────────────
+    clear()
+    print_header()
+    print("6. lépés: Technikai szűrők (opcionális)")
+    print("-" * 55)
+    print()
+    print("  A szűrők megerősítik a Telegram jelzést indikátorokkal.")
+    print("  Ha a szűrő nem teljesül, a bot NEM nyit pozíciót.")
+    print()
+
+    szuro_aktiv = kerd_igen_nem("  Szeretnél technikai szűrőket? (i/n): ")
+    settings["SZURO_AKTIV"] = szuro_aktiv
+
+    if szuro_aktiv:
+        aktiv_szurok = []
+        szuro_config = {}
+
+        clear()
+        print_header()
+        print("  Elérhető szűrők — válaszd ki melyeket szeretnéd:")
+        print("-" * 55)
+        print()
+        print("  1. EMA/SMA Keresztezés  — trend irány")
+        print("  2. MACD + Signal        — trend + momentum")
+        print("  3. RSI Szűrő            — túlvett/túladott szűrés")
+        print("  4. Bollinger Band       — volatilitás szűrő")
+        print("  5. ATR Dinamikus SL     — okosabb stop loss (nem szűr)")
+        print("  6. Gyertya Minta        — price action megerősítés")
+        print("  7. ADX Trend Erő        — csak erős trendben nyit")
+        print("  8. Volume Szűrő         — forgalom megerősítés")
+        print()
+        print("  Ajánlott kombinációk:")
+        print("    Kezdőknek:   1 + 3")
+        print("    Haladóknak:  2 + 7 + 3")
+        print("    Kísérleti:   1 + 6 + 5")
+        print()
+
+        SZURO_MAP = {
+            1: "ema_sma",
+            2: "macd",
+            3: "rsi",
+            4: "bollinger",
+            5: "atr_sl",
+            6: "candle",
+            7: "adx",
+            8: "volume",
+        }
+
+        for num, key in SZURO_MAP.items():
+            nevek = {
+                "ema_sma": "EMA/SMA Keresztezés",
+                "macd": "MACD + Signal",
+                "rsi": "RSI Szűrő",
+                "bollinger": "Bollinger Band",
+                "atr_sl": "ATR Dinamikus SL",
+                "candle": "Gyertya Minta",
+                "adx": "ADX Trend Erő",
+                "volume": "Volume Szűrő",
+            }
+            if kerd_igen_nem(f"  {num}. {nevek[key]} — bekapcsolod? (i/n): "):
+                aktiv_szurok.append(key)
+
+                # Időkeret kérdés
+                print()
+                print("  Időkeret választék: M1, M5, M15, M30, H1, H4, D1")
+                tf_default = {
+                    "ema_sma": "H1", "macd": "H1", "rsi": "H1",
+                    "bollinger": "H1", "atr_sl": "H1", "candle": "M15",
+                    "adx": "H1", "volume": "H1",
+                }
+                tf_val = input(f"  Időkeret [{tf_default[key]}]: ").strip().upper()
+                if tf_val == "":
+                    tf_val = tf_default[key]
+                szuro_config[f"{key}_tf"] = tf_val
+
+                # Indikátor specifikus paraméterek
+                if key == "ema_sma":
+                    p = input("  EMA periódus [7]: ").strip()
+                    szuro_config["ema_period"] = int(p) if p else 7
+                    p = input("  SMA periódus [10]: ").strip()
+                    szuro_config["sma_period"] = int(p) if p else 10
+
+                elif key == "macd":
+                    p = input("  MACD gyors periódus [12]: ").strip()
+                    szuro_config["macd_fast"] = int(p) if p else 12
+                    p = input("  MACD lassú periódus [26]: ").strip()
+                    szuro_config["macd_slow"] = int(p) if p else 26
+                    p = input("  Signal periódus [9]: ").strip()
+                    szuro_config["macd_signal"] = int(p) if p else 9
+
+                elif key == "rsi":
+                    p = input("  RSI periódus [14]: ").strip()
+                    szuro_config["rsi_period"] = int(p) if p else 14
+                    p = input("  BUY limit — RSI max (pl. 65): ").strip()
+                    szuro_config["rsi_buy_limit"] = int(p) if p else 65
+                    p = input("  SELL limit — RSI min (pl. 35): ").strip()
+                    szuro_config["rsi_sell_limit"] = int(p) if p else 35
+
+                elif key == "bollinger":
+                    p = input("  BB periódus [20]: ").strip()
+                    szuro_config["bb_period"] = int(p) if p else 20
+                    p = input("  Szórás szorzó [2.0]: ").strip()
+                    szuro_config["bb_std"] = float(p) if p else 2.0
+
+                elif key == "atr_sl":
+                    p = input("  ATR periódus [14]: ").strip()
+                    szuro_config["atr_period"] = int(p) if p else 14
+                    p = input("  ATR szorzó [1.5]: ").strip()
+                    szuro_config["atr_multiplier"] = float(p) if p else 1.5
+
+                elif key == "adx":
+                    p = input("  ADX periódus [14]: ").strip()
+                    szuro_config["adx_period"] = int(p) if p else 14
+                    p = input("  Minimum ADX érték [25]: ").strip()
+                    szuro_config["adx_min"] = int(p) if p else 25
+
+                elif key == "volume":
+                    p = input("  Volume átlag periódus [20]: ").strip()
+                    szuro_config["volume_period"] = int(p) if p else 20
+                    p = input("  Minimum szorzó [1.3]: ").strip()
+                    szuro_config["volume_multiplier"] = float(p) if p else 1.3
+
+                print()
+
+        # Entry zóna tolerancia
+        clear()
+        print_header()
+        print("  Entry zóna tolerancia")
+        print("-" * 55)
+        print()
+        print("  Ha az ár nincs pontosan az entry zónában, de a szűrők")
+        print("  megerősítik a jelzést, mennyivel lehet eltérni?")
+        print()
+        print("  0 = csak pontos entry zónában nyit")
+        print("  3 = ±3 USD tolerancia (ajánlott kezdésnek)")
+        print("  5 = ±5 USD tolerancia")
+        print()
+        tol = input("  Entry tolerancia USD-ben [0]: ").strip()
+        szuro_config["entry_tolerancia_usd"] = float(tol) if tol else 0.0
+
+        settings["AKTIV_SZUROK"]  = aktiv_szurok
+        settings["SZURO_CONFIG"]  = szuro_config
+    else:
+        settings["AKTIV_SZUROK"] = []
+        settings["SZURO_CONFIG"] = {}
 
     # ── ÖSSZEFOGLALÁS ─────────────────────────────────────────────────────────
     clear()

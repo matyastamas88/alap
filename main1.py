@@ -21,6 +21,7 @@ from mt5_trader import place_order, set_notifier as mt5_set_notifier, close_all_
 from position_manager import register_deal, run_monitor
 from notifier import notify_trade_opened, notify_trade_failed, notify_pending_opened, send_notification
 from sheets_logger import log_trade, log_skipped_signal, init_on_startup as sheets_init
+from signal_filter import run_filters
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -320,6 +321,25 @@ async def process_signal(signal):
 
     mozgo = "MOZGÓ SL" if config.MOZGO_SL_ENABLED else "FIX SL"
     logger.info(f"[{LABEL}] Verzió: {mozgo}")
+
+    # ── Technikai szűrő ellenőrzés ───────────────────────────────────────────
+    aktiv_szurok = getattr(config, 'AKTIV_SZUROK', [])
+    if aktiv_szurok:
+        szuro_ok, atr_sl, szuro_uzenetek = run_filters(signal, config)
+        for uzenet in szuro_uzenetek:
+            logger.info(f"[{LABEL}] {uzenet}")
+        if not szuro_ok:
+            await send_notification(
+                f"🔍 <b>Jelzés szűrve — technikai feltétel nem teljesült</b>\n"
+                f"Forrás: <b>{LABEL}</b>\n"
+                f"Jelzés: {signal.action} @ {signal.entry_mid}\n"
+                f"\n".join(szuro_uzenetek[-3:])
+            )
+            return
+        # ATR SL felülírás ha be van kapcsolva
+        if atr_sl is not None:
+            logger.info(f"[{LABEL}] ATR SL alkalmazva: {atr_sl} (eredeti: {signal.sl})")
+            signal.sl = atr_sl
 
     poziciok = _get_poziciok()
     if not poziciok:
