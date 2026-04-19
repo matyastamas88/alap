@@ -385,7 +385,7 @@ async def handle_message_text(text: str, source: str = "új"):
         logger.info(f"[{LABEL}] CLOSE parancs érkezett!")
         return "close"
 
-    signal = parse_signal(text)
+    signal = parse_signal(text, default_sl_usd=getattr(config, "DEFAULT_SL_USD", 0))
     if signal:
         asyncio.create_task(process_signal(signal))
     else:
@@ -427,7 +427,7 @@ async def run_bot():
         most_utc = datetime.now(timezone.utc)
         kor_perc = (most_utc - uzenet_ideje).total_seconds() / 60
         if kor_perc > MAX_JELZES_KOR_PERC:
-            signal_check = parse_signal(text)
+            signal_check = parse_signal(text, default_sl_usd=getattr(config, "DEFAULT_SL_USD", 0))
             if signal_check:
                 logger.warning(
                     f"[{LABEL}] ⚠️ Lejárt jelzés ({kor_perc:.1f} perc régi) — kihagyva. "
@@ -471,7 +471,7 @@ async def run_bot():
         most_utc = datetime.now(timezone.utc)
         kor_perc = (most_utc - uzenet_ideje).total_seconds() / 60
         if kor_perc > MAX_JELZES_KOR_PERC:
-            signal_check = parse_signal(text)
+            signal_check = parse_signal(text, default_sl_usd=getattr(config, "DEFAULT_SL_USD", 0))
             if signal_check:
                 logger.warning(
                     f"[{LABEL}] ⚠️ Lejárt szerkesztett jelzés ({kor_perc:.1f} perc régi) — kihagyva. "
@@ -480,7 +480,7 @@ async def run_bot():
                 # Csak logba írjuk, NEM küldünk Telegram értesítőt
             return
 
-        signal = parse_signal(text)
+        signal = parse_signal(text, default_sl_usd=getattr(config, "DEFAULT_SL_USD", 0))
         if signal:
             logger.info(f"[{LABEL}] Szerkesztett jelzés feldolgozva: {signal.action} @ {signal.entry_mid}")
             asyncio.create_task(process_signal(signal))
