@@ -38,6 +38,7 @@ _kozos_init_failed  = False
 KERESKEDES_FEJLEC = [
     "Dátum", "Idő", "Bot", "Irány", "Belépési ár", "SL", "TP szint",
     "TP ár", "Lot", "Magic", "Pozíció label", "Signal ID",
+    "Ticket",
     "Zárási ár", "Eredmény (USD)", "Időtartam (perc)", "Státusz",
     "Megjegyzés"
 ]
@@ -387,6 +388,7 @@ def log_trade(deal: dict):
         tp_label = f"TP{tp_index + 1}"
         tp_ar    = deal.get("tp", "")
 
+        ticket = deal.get("ticket", "")
         sor = [
             datum,                          # Dátum
             ido,                            # Idő
@@ -400,11 +402,12 @@ def log_trade(deal: dict):
             deal.get("magic", ""),          # Magic
             deal.get("label", ""),          # Pozíció label
             deal.get("signal_id", ""),      # Signal ID
+            str(ticket),                    # Ticket (azonosításhoz)
             "",                             # Zárási ár (majd záráskor)
             "",                             # Eredmény USD (majd záráskor)
             "",                             # Időtartam (majd záráskor)
-            "Nyitott",                      # Státusz
-            "pending" if deal.get("is_pending") else "",  # Megjegyzés
+            "Pending" if deal.get("is_pending") else "Nyitott",  # Státusz
+            "",                             # Megjegyzés
         ]
 
         _sh_kereskedes.append_row(sor, value_input_option='USER_ENTERED')
@@ -425,34 +428,88 @@ def log_trade(deal: dict):
 def log_trade_closed(ticket: int, zaras_ar: float, eredmeny_usd: float,
                      idotartam_perc: float, status: str = "TP"):
     """
-    Pozíció záráskor hívódik — frissíti a sort a zárási adatokkal.
-    status: "TP", "SL", "Manuális"
+    Pozíció záráskor hívódik — ticket alapján megkeresi és frissíti a sort.
+    status: "TP", "SL", "Manuális", "Timeout"
     """
     if not _init_sheets():
         return
 
     try:
-        # Megkeressük a sort a ticket alapján (Signal ID vagy magic alapján)
-        # A ticket a Signal ID-ben is szerepel, de egyszerűbb az összes sort végignézni
         sorok = _sh_kereskedes.get_all_values()
         ticket_str = str(ticket)
+        talalt = False
 
-        for idx, sor in enumerate(sorok[1:], start=2):  # 1-es sor a fejléc
-            # Signal ID tartalmazza a ticket infót, vagy keresünk egyéb azonosítót
-            if len(sor) >= 12 and sor[15] == "Nyitott":
-                # Ha a sor még nyitott, és egyéb azonosítóval megtalálható
-                # Ez egy egyszerűsített keresés — a teljes implementációhoz
-                # a ticket-et is el lehet tárolni egy oszlopban
-                pass
+        # Ticket oszlop index = 12 (0-tól számozva)
+        TICKET_COL = 12
+        ZARAS_COL  = 13  # N oszlop
+        EREDM_COL  = 14  # O oszlop
+        IDO_COL    = 15  # P oszlop
+        STAT_COL   = 16  # Q oszlop
 
-        # Egyszerűbb megközelítés: az utolsó "Nyitott" sort frissítjük
-        # (ha mindig csak 1 pozíció van egyszerre)
-        # Pontosabb megoldás: ticket oszlop hozzáadása
-        logger.info(f"Sheets: zárás naplózva (ticket={ticket}, eredmény={eredmeny_usd} USD)")
+        for idx, sor in enumerate(sorok[1:], start=2):
+            if len(sor) > TICKET_COL and str(sor[TICKET_COL]) == ticket_str:
+                # Megtaláltuk — frissítjük a zárási adatokat
+                nyitas_ido_str = f"{sor[0]} {sor[1]}" if len(sor) > 1 else ""
+
+                _sh_kereskedes.update(
+                    f"N{idx}:Q{idx}",
+                    [[
+                        zaras_ar,
+                        round(eredmeny_usd, 2),
+                        round(idotartam_perc, 1),
+                        status,
+                    ]],
+                    value_input_option="USER_ENTERED"
+                )
+                talalt = True
+                logger.info(f"Sheets: zárás frissítve (ticket={ticket}, eredmény={eredmeny_usd:.2f} USD, státusz={status})")
+
+                # Közös sheet frissítése
+                if _init_kozos_sheets():
+                    try:
+                        k_sorok = _kozos_sh_kereskedes.get_all_values()
+                        for k_idx, k_sor in enumerate(k_sorok[1:], start=2):
+                            if len(k_sor) > TICKET_COL and str(k_sor[TICKET_COL]) == ticket_str:
+                                _kozos_sh_kereskedes.update(
+                                    f"N{k_idx}:Q{k_idx}",
+                                    [[zaras_ar, round(eredmeny_usd, 2), round(idotartam_perc, 1), status]],
+                                    value_input_option="USER_ENTERED"
+                                )
+                                break
+                    except Exception as ke:
+                        logger.warning(f"Közös Sheets zárás frissítés sikertelen: {ke}")
+                break
+
+        if not talalt:
+            logger.warning(f"Sheets: ticket #{ticket} nem található a táblázatban")
+
         _frissit_napi_bontas()
 
     except Exception as e:
         logger.error(f"Sheets log_trade_closed hiba: {e}")
+
+
+def log_pending_result(ticket: int, status: str, megjegyzes: str = ""):
+    """
+    Pending megbízás eredményének naplózása.
+    status: "Teljesült", "Timeout", "Törölt"
+    """
+    if not _init_sheets():
+        return
+    try:
+        sorok = _sh_kereskedes.get_all_values()
+        ticket_str = str(ticket)
+        for idx, sor in enumerate(sorok[1:], start=2):
+            if len(sor) > 12 and str(sor[12]) == ticket_str:
+                _sh_kereskedes.update(
+                    f"Q{idx}:R{idx}",
+                    [[status, megjegyzes]],
+                    value_input_option="USER_ENTERED"
+                )
+                logger.info(f"Sheets: pending frissítve #{ticket} → {status}")
+                break
+    except Exception as e:
+        logger.error(f"Sheets log_pending_result hiba: {e}")
 
 
 def log_skipped_signal(signal, reason: str):

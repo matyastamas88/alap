@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 import config
 from mt5_trader import modify_position, is_position_open, cancel_pending_order, is_pending_open
 from notifier import send_notification
+from sheets_logger import log_trade_closed, log_pending_result
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +268,10 @@ async def _check_pending(ticket: int, deal: dict):
             logger.info(f"✅ Pending teljesült: #{ticket} ({label})")
             deal["is_pending"] = False
             _active_deals[ticket] = deal
+            try:
+                log_pending_result(ticket, "Teljesült")
+            except Exception:
+                pass
             await send_notification(
                 f"✅ <b>Limit megbízás teljesült!</b>\n"
                 f"Forrás: <b>{label}</b>\n"
@@ -293,6 +298,10 @@ async def _check_pending(ticket: int, deal: dict):
         del _pending_deals[ticket]
         _save_positions()
         if cancelled:
+            try:
+                log_pending_result(ticket, "Timeout", f"{config.PENDING_TIMEOUT_MINUTES} perc eltelt")
+            except Exception:
+                pass
             await send_notification(
                 f"⏰ <b>Pending törölve — időtúllépés</b>\n"
                 f"Forrás: <b>{label}</b>\n"
@@ -313,31 +322,67 @@ async def _check_deal(ticket: int, deal: dict):
     if not is_position_open(ticket):
         logger.info(f"Pozíció zárul: #{ticket} ({label})")
 
+        # ── Zárási adatok lekérése MT5 history-ból ───────────────────────────
+        zaras_ar = 0.0
+        eredmeny_usd = 0.0
+        zaras_status = "Manuális"
+        try:
+            deals_h = mt5.history_deals_get(position=ticket)
+            if deals_h:
+                close_deal = sorted(deals_h, key=lambda d: d.time)[-1]
+                zaras_ar = close_deal.price
+                eredmeny_usd = close_deal.profit
+                if close_deal.reason == mt5.DEAL_REASON_TP:
+                    zaras_status = "TP"
+                elif close_deal.reason == mt5.DEAL_REASON_SL:
+                    zaras_status = "SL"
+                else:
+                    zaras_status = "Manuális"
+        except Exception as e:
+            logger.warning(f"Zárási adatok lekérése sikertelen: {e}")
+
+        # Időtartam számítása
+        try:
+            from datetime import datetime
+            nyitas = datetime.fromisoformat(deal.get("time", datetime.now().isoformat()))
+            idotartam = (datetime.now() - nyitas).total_seconds() / 60
+        except Exception:
+            idotartam = 0.0
+
         # Ha POS1 TP-n zárt → triggereljük a testvér pozíciók TP3 SL mozgatását
         if config.MOZGO_SL_ENABLED and magic == pos1_magic:
-            if _was_closed_at_tp(ticket):
+            if zaras_status == "TP":
                 logger.info(f"📍 POS1 (TP3) TP-n zárt → testvér SL mozgatás (TP3 trigger)")
                 for sister in _get_sister_deals(ticket):
                     last = sister.get("last_triggered_tp", -1)
-                    if last < 2:  # TP3 még nem volt triggerlve
+                    if last < 2:
                         await _apply_sl_move(sister, triggered_tp_index=2)
             else:
                 logger.info(f"POS1 SL-en/manuálisan zárt — mozgó SL nem aktiválódik")
 
         # Ha POS2 TP-n zárt → triggereljük POS3 TP5 SL mozgatását
         if config.MOZGO_SL_ENABLED and magic == pos2_magic:
-            if _was_closed_at_tp(ticket):
+            if zaras_status == "TP":
                 logger.info(f"📍 POS2 (TP5) TP-n zárt → POS3 SL mozgatás (TP5 trigger)")
                 for sister in _get_sister_deals(ticket):
                     if sister["magic"] == pos3_magic:
                         last = sister.get("last_triggered_tp", -1)
-                        if last < 4:  # TP5 még nem volt triggerlve
+                        if last < 4:
                             await _apply_sl_move(sister, triggered_tp_index=4)
 
+        # ── Sheets naplózás ───────────────────────────────────────────────────
+        try:
+            log_trade_closed(ticket, zaras_ar, eredmeny_usd, idotartam, zaras_status)
+        except Exception as e:
+            logger.warning(f"Sheets zárás naplózás hiba: {e}")
+
+        eredmeny_jel = "+" if eredmeny_usd >= 0 else ""
         await send_notification(
-            f"🏁 <b>Pozíció lezárult</b>\n"
+            f"🏁 <b>Pozíció lezárult — {zaras_status}</b>\n"
             f"Forrás: <b>{label}</b>\n"
-            f"Ticket: #{ticket} | Cél: TP{deal['tp_index']+1}"
+            f"Ticket: #{ticket}\n"
+            f"Zárási ár: {zaras_ar} | Eredmény: {eredmeny_jel}{eredmeny_usd:.2f} USD\n"
+            f"Időtartam: {idotartam:.0f} perc"
         )
         del _active_deals[ticket]
         _save_positions()
