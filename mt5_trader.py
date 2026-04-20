@@ -1,7 +1,6 @@
 """
 MT5 kereskedési modul — általános verzió
 Mindkét csoport botja használja, config paraméterekkel.
-Dinamikus pozíció lista (POZICIO_SZAM alapján, nincs hardcode POS1/2/3)
 """
 
 import logging
@@ -103,12 +102,13 @@ def restart_mt5(cfg=None) -> bool:
         return False
 
 
+
 # ── Automata lot számítás ─────────────────────────────────────────────────────
 
 def calculate_lot(cfg, risk_pct: float, sl_price: float, entry_price: float) -> float:
     """
     Kiszámolja az optimális lot méretet a kockázat % alapján.
-
+    
     Képlet: lot = (egyenleg × kockázat%) / (SL távolság USD-ben × 100)
     Az XAUUSD-nél 1 lot = 100 oz, 1 pont = 1 USD mozgás 1 lotnál.
     """
@@ -126,8 +126,11 @@ def calculate_lot(cfg, risk_pct: float, sl_price: float, entry_price: float) -> 
             logger.warning("SL távolság 0 — alapértelmezett lot használva")
             return 0.01
 
+        # XAUUSD: 1 lot mozgása 1 pontban = 1 USD
+        # sl_dist pontban = sl_dist (mivel az ár USD/oz)
         lot = risk_usd / (sl_dist * 1.0)
 
+        # Kerekítés 2 tizedesre, min 0.01
         sym_info = mt5.symbol_info(cfg.SYMBOL)
         if sym_info:
             step = sym_info.volume_step
@@ -165,12 +168,14 @@ def check_daily_loss_limit(cfg) -> bool:
 
         today = __import__('datetime').date.today()
 
+        # Nap elején menti az egyenleget
         if _daily_start_date != today:
             _daily_start_balance = info.balance
             _daily_start_date    = today
             logger.info(f"Napi egyenleg rögzítve: {_daily_start_balance} USD")
             return False
 
+        # Veszteség számítás
         loss     = _daily_start_balance - info.balance
         loss_pct = (loss / _daily_start_balance) * 100 if _daily_start_balance > 0 else 0
 
@@ -183,7 +188,6 @@ def check_daily_loss_limit(cfg) -> bool:
     except Exception as e:
         logger.error(f"Napi limit ellenőrzés hiba: {e}")
         return False
-
 
 # ── Kapcsolat ─────────────────────────────────────────────────────────────────
 
@@ -215,37 +219,25 @@ def connect(cfg, after_restart: bool = False) -> bool:
     return True
 
 
+
 def close_all_positions(cfg, label: str = "") -> tuple[int, int]:
     """
     Lezárja az összes bot által nyitott pozíciót (magic number alapján).
-    Dinamikusan olvassa a magic numbereket a POZICIO_SZAM alapján.
     Visszatér: (sikeresen_zárt, sikertelen) tuple
     """
     magics = set()
-
-    # Dinamikus pozíció lista
-    pozicio_szam = getattr(cfg, 'POZICIO_SZAM', 3)
-    for i in range(1, pozicio_szam + 1):
-        magic = getattr(cfg, f'POS{i}_MAGIC', None)
-        enabled = getattr(cfg, f'POS{i}_ENABLED', False)
-        if magic is not None and enabled:
-            magics.add(magic)
-
-    # Fallback régi stílusú magic változókra
-    for attr in ['MAGIC', 'MAGIC_NUMBER']:
+    # config-ból összegyűjti a magic numbereket
+    for attr in ['POS1_MAGIC', 'POS2_MAGIC', 'POS3_MAGIC', 'MAGIC', 'MAGIC_NUMBER']:
         val = getattr(cfg, attr, None)
         if val is not None:
             magics.add(val)
-
-    if not magics:
-        logger.warning("Nincs magic number megadva — close nem lehetséges")
-        return 0, 0
 
     positions = mt5.positions_get(symbol=cfg.SYMBOL)
     if not positions:
         logger.info(f"Close parancs: nincs nyitott pozíció ({cfg.SYMBOL})")
         return 0, 0
 
+    # Csak a bot magic numberéhez tartozó pozíciókat zárja
     bot_positions = [p for p in positions if p.magic in magics]
     if not bot_positions:
         logger.info(f"Close parancs: nincs bot pozíció (magics: {magics})")
@@ -255,6 +247,7 @@ def close_all_positions(cfg, label: str = "") -> tuple[int, int]:
     sikertelen = 0
 
     for pos in bot_positions:
+        # Zárás piaci áron (ellentétes irányú megbízással)
         order_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
         tick = mt5.symbol_info_tick(cfg.SYMBOL)
         if tick is None:
@@ -287,7 +280,6 @@ def close_all_positions(cfg, label: str = "") -> tuple[int, int]:
             sikertelen += 1
 
     return sikeres, sikertelen
-
 
 def disconnect():
     mt5.shutdown()
@@ -368,9 +360,11 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
     if spread_ok is not True:
         return None, spread_ok
 
+    # Napi veszteség limit ellenőrzés
     if check_daily_loss_limit(cfg):
         return None, f"Napi veszteség limit elérve ({getattr(cfg, 'DAILY_LOSS_LIMIT_PCT', 0)}%) — kereskedés kihagyva"
 
+    # Időablak ellenőrzés
     if getattr(cfg, 'TRADE_HOURS_ENABLED', False):
         now_hour = __import__('datetime').datetime.now().hour
         start    = getattr(cfg, 'TRADE_HOUR_START', 0)
@@ -378,14 +372,14 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
         if not (start <= now_hour < end):
             return None, f"Kereskedési időablakon kívül ({now_hour}:00, ablak: {start}:00-{end}:00)"
 
-    # ── Automata lot számítás — dinamikus pozíció alapján ────────────────────
+    # Automata lot számítás ha be van kapcsolva
     if getattr(cfg, 'AUTO_LOT', False):
-        pozicio_szam = getattr(cfg, 'POZICIO_SZAM', 3)
-        risk_pct = 1.0  # alapértelmezett
-        for i in range(1, pozicio_szam + 1):
-            if getattr(cfg, f'POS{i}_MAGIC', None) == magic:
-                risk_pct = getattr(cfg, f'POS{i}_RISK_PCT', 1.0)
-                break
+        risk_map = {
+            getattr(cfg, 'POS1_MAGIC', None): getattr(cfg, 'POS1_RISK_PCT', 1.0),
+            getattr(cfg, 'POS2_MAGIC', None): getattr(cfg, 'POS2_RISK_PCT', 1.0),
+            getattr(cfg, 'POS3_MAGIC', None): getattr(cfg, 'POS3_RISK_PCT', 1.0),
+        }
+        risk_pct = risk_map.get(magic, 1.0)
         lot_size = calculate_lot(cfg, risk_pct, signal.sl, signal.entry_mid)
         logger.info(f"Automata lot: {lot_size} (magic={magic}, kockázat={risk_pct}%)")
 
@@ -401,7 +395,8 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
     in_zone   = _is_in_entry_zone(current_price, signal)
     entry_mid = signal.entry_mid
 
-    ref_price = entry_mid
+    # ── TP validáció: SELL→TP az ár alatt, BUY→TP az ár felett ──────────────
+    ref_price = entry_mid  # limit megbízásnál az entry mid a belépési ár
     if in_zone:
         ref_price = current_price
 
@@ -429,6 +424,7 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
 
     tp_price = signal.tp_levels[tp_index]
 
+    # ── TP távolság validáció ─────────────────────────────────────────────────
     tp_distance_usd = abs(tp_price - ref_price) * 0.01
     if tp_distance_usd > MAX_TP_DISTANCE_USD:
         err = (
@@ -486,40 +482,43 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
         logger.error(f"Megbízás sikertelen (magic={magic}): {err}")
         return None, err
 
+    # Piaci megbízásnál a result.price néha 0.0 (broker specifikus hiba)
+    # Ezért a tényleges nyitási árat az MT5 pozíció adataiból kérjük le
     if in_zone:
         import time as _time
-        _time.sleep(0.2)
+        _time.sleep(0.2)  # kis várakozás hogy az MT5 regisztrálja
         pos = mt5.positions_get(ticket=result.order)
         if pos and pos[0].price_open > 0:
             exec_price = pos[0].price_open
         elif result.price > 0:
             exec_price = result.price
         else:
+            # Fallback: aktuális ár lekérése
             tick = mt5.symbol_info_tick(cfg.SYMBOL)
             exec_price = tick.ask if signal.action == "BUY" else tick.bid if tick else entry_mid
     else:
         exec_price = entry_mid
-
+    # signal_id: azonosítja az összetartozó pozíciókat (mozgó SL trigger)
     signal_id = f"{signal.action}_{signal.entry_mid}_{datetime.now().strftime('%Y%m%d_%H%M')}"
 
     deal = {
-        "ticket":          result.order,
-        "action":          signal.action,
-        "symbol":          cfg.SYMBOL,
-        "lot":             lot_size,
-        "price":           exec_price,
-        "entry_price":     exec_price,
-        "sl":              signal.sl,
-        "tp":              tp_price,
-        "tp_levels":       signal.tp_levels,
-        "tp_index":        tp_index,
-        "start_tp_index":  tp_index,
-        "mozgo_sl_active": False,
-        "magic":           magic,
-        "signal_id":       signal_id,
-        "is_pending":      not in_zone,
-        "is_market":       in_zone,
-        "time":            datetime.now().isoformat(),
+        "ticket":         result.order,
+        "action":         signal.action,
+        "symbol":         cfg.SYMBOL,
+        "lot":            lot_size,
+        "price":          exec_price,
+        "entry_price":    exec_price,
+        "sl":             signal.sl,
+        "tp":             tp_price,
+        "tp_levels":      signal.tp_levels,
+        "tp_index":       tp_index,
+        "start_tp_index": tp_index,   # az első érvényes TP index
+        "mozgo_sl_active": False,     # True ha mozgó SL már aktiválódott
+        "magic":          magic,
+        "signal_id":      signal_id,  # összetartozó pozíciók azonosítója
+        "is_pending":     not in_zone,
+        "is_market":      in_zone,     # True = azonnali piaci belépés
+        "time":           datetime.now().isoformat(),
     }
 
     logger.info(

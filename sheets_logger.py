@@ -23,11 +23,17 @@ logger = logging.getLogger(__name__)
 
 # ── Lazy import — csak ha be van kapcsolva ────────────────────────────────────
 _gc          = None   # gspread kliens
-_spreadsheet = None   # a megnyitott spreadsheet
+_spreadsheet = None   # a megnyitott spreadsheet (saját)
 _sh_kereskedes = None  # "Kereskedések" munkalap
 _sh_statisztika = None  # "Statisztika" munkalap
 _initialized = False
 _init_failed = False
+
+# ── Közös összesített sheet ───────────────────────────────────────────────────
+_kozos_spreadsheet  = None
+_kozos_sh_kereskedes = None
+_kozos_initialized  = False
+_kozos_init_failed  = False
 
 KERESKEDES_FEJLEC = [
     "Dátum", "Idő", "Bot", "Irány", "Belépési ár", "SL", "TP szint",
@@ -136,6 +142,61 @@ def _init_sheets():
         logger.error(f"Sheets inicializálás sikertelen: {e}")
         _init_failed = True
         return False
+
+
+
+def _init_kozos_sheets():
+    """Inicializálja a közös összesített Google Sheets kapcsolatot."""
+    global _kozos_spreadsheet, _kozos_sh_kereskedes, _kozos_initialized, _kozos_init_failed
+
+    if _kozos_initialized or _kozos_init_failed:
+        return _kozos_initialized
+
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        import config
+
+        kozos_id   = getattr(config, 'SHEETS_KOZOS_ID', None)
+        creds_file = getattr(config, 'SHEETS_CREDENTIALS_FILE', None)
+
+        if not kozos_id or not creds_file or not os.path.exists(creds_file):
+            _kozos_init_failed = True
+            return False
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_file(creds_file, scopes=scopes)
+        gc = gspread.authorize(creds)
+        _kozos_spreadsheet = gc.open_by_key(kozos_id)
+        _kozos_sh_kereskedes = _get_or_create_sheet_in(
+            _kozos_spreadsheet, "Kereskedések", KERESKEDES_FEJLEC
+        )
+        _kozos_initialized = True
+        logger.info(f"✅ Közös Sheets aktív: {_kozos_spreadsheet.title}")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Közös Sheets init sikertelen: {e}")
+        _kozos_init_failed = True
+        return False
+
+
+def _get_or_create_sheet_in(spreadsheet, name: str, fejlec: list):
+    """Adott spreadsheet-ben keres vagy létrehoz munkalapot."""
+    try:
+        return spreadsheet.worksheet(name)
+    except Exception:
+        sh = spreadsheet.add_worksheet(title=name, rows=5000, cols=30)
+        if fejlec:
+            sh.append_row(fejlec, value_input_option='USER_ENTERED')
+            try:
+                _format_header(sh, len(fejlec))
+            except Exception:
+                pass
+        return sh
 
 
 def _get_or_create_sheet(name: str, fejlec: list):
@@ -297,6 +358,14 @@ def init_on_startup():
     else:
         logger.warning("⚠️ Google Sheets NEM aktiv — ellenorizd a credentials fajlt es a .env beallitasokat.")
 
+    # Közös sheet ellenőrzése
+    import config
+    kozos_id = getattr(config, 'SHEETS_KOZOS_ID', None)
+    if kozos_id:
+        _init_kozos_sheets()
+    else:
+        logger.info("ℹ️ Közös összesített Sheets nincs beállítva (SHEETS_KOZOS_ID hiányzik a .env-ből)")
+
 
 def log_trade(deal: dict):
     """
@@ -340,6 +409,14 @@ def log_trade(deal: dict):
 
         _sh_kereskedes.append_row(sor, value_input_option='USER_ENTERED')
         logger.info(f"Sheets: kereskedés naplózva (ticket={deal.get('ticket')})")
+
+        # Közös összesített sheet-be is írunk ha be van állítva
+        if _init_kozos_sheets():
+            try:
+                _kozos_sh_kereskedes.append_row(sor, value_input_option='USER_ENTERED')
+                logger.info("Sheets: közös sheet-be is naplózva")
+            except Exception as ke:
+                logger.warning(f"Közös Sheets naplózás sikertelen: {ke}")
 
     except Exception as e:
         logger.error(f"Sheets log_trade hiba: {e}")
@@ -415,6 +492,13 @@ def log_skipped_signal(signal, reason: str):
 
         _sh_kereskedes.append_row(sor, value_input_option='USER_ENTERED')
         logger.info(f"Sheets: kihagyott jelzés naplózva ({reason[:50]})")
+
+        # Közös sheet
+        if _init_kozos_sheets():
+            try:
+                _kozos_sh_kereskedes.append_row(sor, value_input_option='USER_ENTERED')
+            except Exception:
+                pass
 
     except Exception as e:
         logger.error(f"Sheets log_skipped_signal hiba: {e}")

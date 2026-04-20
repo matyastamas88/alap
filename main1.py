@@ -44,8 +44,10 @@ _napi_kereskedes_szam  = 0
 _napi_kereskedes_datum = None
 
 # ── Duplikáció szűrő ──────────────────────────────────────────────────────────
-_utolso_jelzes_kulcs = None
+_utolso_jelzes_kulcs = None   # gyors duplikáció szűrő (10 mp)
 _utolso_jelzes_ido   = None
+_utolso_irany        = None   # irány szűrő (config: IRANY_SZURO_PERC)
+_utolso_irany_ido    = None
 _trading_paused      = False
 
 
@@ -280,13 +282,15 @@ async def run_heartbeat():
 
 async def process_signal(signal):
     global _napi_kereskedes_szam, _napi_kereskedes_datum, _trading_paused
-    global _utolso_jelzes_kulcs, _utolso_jelzes_ido
+    global _utolso_jelzes_kulcs, _utolso_jelzes_ido, _utolso_irany, _utolso_irany_ido
 
     logger.info(f"[{LABEL}] Jelzés: {signal.action} @ {signal.entry_mid}")
 
     # ── Duplikáció szűrő ──────────────────────────────────────────────────────
     jelzes_kulcs = f"{signal.action}_{signal.entry_mid}"
     most = datetime.now()
+
+    # 1. Gyors szűrő (10 mp): ugyanaz az üzenet új+szerkesztett egyszerre
     if (_utolso_jelzes_kulcs == jelzes_kulcs and
             _utolso_jelzes_ido is not None and
             (most - _utolso_jelzes_ido).total_seconds() < 10):
@@ -295,8 +299,24 @@ async def process_signal(signal):
             f"(már feldolgozva {(most - _utolso_jelzes_ido).total_seconds():.1f} másodperce)"
         )
         return
+
+    # 2. Irány szűrő: ugyanolyan irányú jelzés X percen belül kiszűrve
+    irany_perc = getattr(config, 'IRANY_SZURO_PERC', 10)
+    if irany_perc > 0:
+        if (_utolso_irany == signal.action and
+                _utolso_irany_ido is not None and
+                (most - _utolso_irany_ido).total_seconds() < irany_perc * 60):
+            elapsed = (most - _utolso_irany_ido).total_seconds() / 60
+            logger.info(
+                f"[{LABEL}] Irány szűrő: {signal.action} jelzés kiszűrve "
+                f"(előző {signal.action} {elapsed:.1f} perce volt, limit: {irany_perc} perc)"
+            )
+            return
+
     _utolso_jelzes_kulcs = jelzes_kulcs
     _utolso_jelzes_ido   = most
+    _utolso_irany        = signal.action
+    _utolso_irany_ido    = most
 
     # ── Pause ellenőrzés ──────────────────────────────────────────────────────
     if _trading_paused:

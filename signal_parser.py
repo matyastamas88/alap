@@ -67,6 +67,11 @@ def parse_signal(text: str, default_sl_usd: float = 0) -> TradeSignal | None:
         return None
     text_upper = text.upper()
 
+    # ── HIGH RISK szűrő — ha a jelzés tartalmazza, kihagyja ──────────────────
+    if "HIGH RISK" in text_upper:
+        logger.info("HIGH RISK jelzés — kihagyva (config: HIGH_RISK_SKIP=True)")
+        return None
+
     # ── Irány ─────────────────────────────────────────────────────────────────
     if "BUY" in text_upper:
         action = "BUY"
@@ -85,6 +90,10 @@ def parse_signal(text: str, default_sl_usd: float = 0) -> TradeSignal | None:
     entry_low = entry_high = None
 
     range_patterns = [
+        # "SELL ZONE : 4796 - 4799" vagy "BUY ZONE : 4793 - 4790"
+        r'(?:BUY|SELL)\s+ZONE\s*[:\-]*\s*(\d{3,5}(?:\.\d+)?)\s*[-]\s*(\d{3,5}(?:\.\d+)?)',
+        # "4793 - 4790 BUY ZONE" vagy "4797 - 4799 SELL ZONE" — ELŐRE kell!
+        r'(\d{3,5}(?:\.\d+)?)\s*[-]\s*(\d{3,5}(?:\.\d+)?)\s+(?:BUY|SELL)\s+ZONE',
         # "AT CMP :- 4792 - 4788" (kettőspont-kötőjel)
         r'at\s+cmp\s*[:\-]*\s*(\d{3,5}(?:\.\d+)?)\s*[\/\-]+\s*(\d{3,5}(?:\.\d+)?)',
         # "NEAR :- 4793 - 4790"
@@ -146,7 +155,7 @@ def parse_signal(text: str, default_sl_usd: float = 0) -> TradeSignal | None:
     sl_was_auto = False
 
     sl_match = re.search(
-        r'(?:stop\s*loss|\bsl\b)\s*[:\-•]*\s*(\d{3,5}(?:\.\d+)?)',
+        r'(?:stop\s*loss(?:\s*\([^)]*\))?|\bsl\b)\s*[:\-•]*\s*(\d{3,5}(?:\.\d+)?)',
         text, re.IGNORECASE
     )
     if sl_match:

@@ -191,6 +191,19 @@ def main():
     mozgo_sl = kerd_igen_nem("  Mozgó SL-t szeretnél? (i/n): ")
     settings["MOZGO_SL_ENABLED"] = mozgo_sl
 
+    if mozgo_sl:
+        print()
+        print("  Melyik TP szintnél kezdje az SL emelését entry szintre?")
+        print("  (Ezután minden elért TP szint után tovább emeli: TP1, TP2 stb.)")
+        print()
+        print("  Példa: ha 3-at adsz meg, TP3 elérése után SL → entry,")
+        print("         TP4-nél SL → TP1, TP5-nél SL → TP2, stb.")
+        print()
+        sl_elso_tp = kerd_int("  SL emelés kezdő TP szint (pl. 2, 3, 4): ", 1, 10)
+        settings["SL_MOZGAS_ELSO_TP"] = sl_elso_tp
+    else:
+        settings["SL_MOZGAS_ELSO_TP"] = 3  # alapértelmezett, de nem aktív
+
     # ── 4. NAPI VESZTESÉG LIMIT ───────────────────────────────────────────────
     clear()
     print_header()

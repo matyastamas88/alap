@@ -1,17 +1,13 @@
 """
-Pozíció figyelő — v4 (dinamikus pozíció támogatás)
-- Dinamikus pozíció lista (POZICIO_SZAM alapján, nincs hardcode POS1/2/3)
-- SL_MOZGAS_ELSO_TP: melyik TP elérésekor mozduljon először az SL
+Pozíció figyelő — v3
 - Kettős trigger: testvér pozíció zárulása + ár alapú figyelés
-- Önállóan is működik (pl. csak 1 pozíció fut)
+- Önállóan is működik (pl. csak magic=33 fut)
 - JSON mentés adatvesztés ellen
 
-Mozgó SL logika (SL_MOZGAS_ELSO_TP alapján):
-  Ha SL_MOZGAS_ELSO_TP = 3:
-    TP3 elérve → SL = Entry
-    TP4 elérve → SL = TP1
-    TP5 elérve → SL = TP2
-    stb.
+Mozgó SL logika (magic=32 és 33):
+  TP3 elérve → SL = Entry
+  TP4 elérve → SL = TP1
+  TP5 elérve → SL = TP2  (csak magic=33)
 """
 
 import asyncio
@@ -33,36 +29,6 @@ _pending_deals: dict[int, dict] = {}
 
 POSITIONS_FILE = getattr(config, 'POSITIONS_FILE', 'positions.json')
 _signal_groups: dict[str, list[int]] = {}
-
-
-# ── Dinamikus magic lista ─────────────────────────────────────────────────────
-
-def _get_all_magics() -> list[int]:
-    """Visszaadja az összes aktív pozíció magic numberét a config alapján."""
-    magics = []
-    pozicio_szam = getattr(config, 'POZICIO_SZAM', 3)
-    for i in range(1, pozicio_szam + 1):
-        magic = getattr(config, f'POS{i}_MAGIC', None)
-        enabled = getattr(config, f'POS{i}_ENABLED', False)
-        if magic is not None and enabled:
-            magics.append(magic)
-    return magics
-
-def _get_pozicio_index(magic: int) -> int:
-    """Visszaadja hogy az adott magic a hányadik pozíció (0-tól indexelve)."""
-    pozicio_szam = getattr(config, 'POZICIO_SZAM', 3)
-    for i in range(1, pozicio_szam + 1):
-        if getattr(config, f'POS{i}_MAGIC', None) == magic:
-            return i - 1  # 0-tól indexelve
-    return -1
-
-def _get_pozicio_tp_index(magic: int) -> int:
-    """Visszaadja az adott magic pozíció TP indexét."""
-    pozicio_szam = getattr(config, 'POZICIO_SZAM', 3)
-    for i in range(1, pozicio_szam + 1):
-        if getattr(config, f'POS{i}_MAGIC', None) == magic:
-            return getattr(config, f'POS{i}_TP_INDEX', 1) - 1  # 0-tól indexelve
-    return 0
 
 
 # ── JSON mentés / betöltés ────────────────────────────────────────────────────
@@ -106,49 +72,39 @@ def _load_positions():
 
 # ── Mozgó SL szabályok ────────────────────────────────────────────────────────
 
+# tp_trigger_index → (sl_forrás, következő_figyelendő_tp_index)
+# sl_forrás: "entry" vagy int (tp_levels index)
+# Ez az általános táblázat — a konkrét pozíciónál a start_tp_index alapján épül fel
+
 def get_sl_rules(magic: int) -> dict:
     """
     Visszaadja a mozgó SL szabályokat az adott magic numberhez.
-    Dinamikusan épül fel a SL_MOZGAS_ELSO_TP és a pozíció TP indexe alapján.
+    A szabályok: melyik TP elérése után mi legyen az SL.
 
-    SL_MOZGAS_ELSO_TP = 3 (alapértelmezett):
-      TP3 elérve → SL = Entry
-      TP4 elérve → SL = TP1
-      TP5 elérve → SL = TP2
-      stb.
+    Magic=POS2 (TP5-re nyit):
+      TP3 (index 2) → SL = Entry,  következő figyelés: TP4
+      TP4 (index 3) → SL = TP1,    következő figyelés: TP5 (zárul)
 
-    A szabályok csak addig mennek ameddig az adott pozíció TP-je engedi.
+    Magic=POS3 (TP6-ra nyit):
+      TP3 (index 2) → SL = Entry,  következő figyelés: TP4
+      TP4 (index 3) → SL = TP1,    következő figyelés: TP5
+      TP5 (index 4) → SL = TP2,    következő figyelés: TP6 (zárul)
     """
-    if not getattr(config, 'MOZGO_SL_ENABLED', False):
-        return {}
+    pos2_magic = getattr(config, 'POS2_MAGIC', None)
+    pos3_magic = getattr(config, 'POS3_MAGIC', None)
 
-    # Melyik TP-nél kezdődjön az SL mozgatás (1-től számozva, pl. 3 = TP3-nál)
-    elso_tp = getattr(config, 'SL_MOZGAS_ELSO_TP', 3)
-    elso_tp_idx = elso_tp - 1  # 0-tól indexelve
-
-    # A pozíció saját TP indexe — csak addig érdemes szabályokat generálni
-    pozicio_tp_idx = _get_pozicio_tp_index(magic)
-
-    if pozicio_tp_idx < elso_tp_idx:
-        # Ez a pozíció nem ér el az első SL mozgatási TP-ig → nincs szabály
-        return {}
-
-    rules = {}
-    # Az első SL mozgatástól a pozíció TP-jéig generálunk szabályokat
-    for tp_idx in range(elso_tp_idx, pozicio_tp_idx):
-        # sl_source: hány TP-vel van az aktuális trigger előtt
-        # Első trigger: "entry", utána TP1, TP2, stb.
-        offset = tp_idx - elso_tp_idx
-        if offset == 0:
-            sl_source = "entry"
-        else:
-            sl_source = offset - 1  # TP(offset) index, 0-tól
-        rules[tp_idx] = {
-            "sl_source": sl_source,
-            "next_watch": tp_idx + 1,
+    if magic == pos2_magic:
+        return {
+            2: {"sl_source": "entry", "next_watch": 3},  # TP3→SL=Entry
+            3: {"sl_source": 0,       "next_watch": 4},  # TP4→SL=TP1
         }
-
-    return rules
+    elif magic == pos3_magic:
+        return {
+            2: {"sl_source": "entry", "next_watch": 3},  # TP3→SL=Entry
+            3: {"sl_source": 0,       "next_watch": 4},  # TP4→SL=TP1
+            4: {"sl_source": 1,       "next_watch": 5},  # TP5→SL=TP2
+        }
+    return {}
 
 
 def _get_new_sl(deal: dict, sl_source) -> float:
@@ -163,12 +119,11 @@ def _get_new_sl(deal: dict, sl_source) -> float:
 # ── Magic → label ─────────────────────────────────────────────────────────────
 
 def _magic_label(magic: int) -> str:
+    # BOT_NEV a .env fájlból jön — dinamikusan azonosítja a botot
     csoport = getattr(config, 'BOT_NEV', '1.csoport')
-    pozicio_szam = getattr(config, 'POZICIO_SZAM', 3)
-    for i in range(1, pozicio_szam + 1):
-        if getattr(config, f'POS{i}_MAGIC', None) == magic:
-            label = getattr(config, f'POS{i}_LABEL', f'POS{i}')
-            return f"{csoport} {label}"
+    for attr, label_attr in [('POS1_MAGIC','POS1_LABEL'),('POS2_MAGIC','POS2_LABEL'),('POS3_MAGIC','POS3_LABEL')]:
+        if getattr(config, attr, None) == magic:
+            return f"{csoport} {getattr(config, label_attr, attr)}"
     return f"magic={magic}"
 
 
@@ -208,6 +163,44 @@ def _was_closed_at_tp(ticket: int) -> bool:
         return False
 
 
+def _price_ever_reached_tp(deal: dict, tp_index: int) -> bool:
+    """
+    Ellenőrzi hogy az ár valaha elérte-e a TP szintet
+    az MT5 tick history alapján — visszamenőleg is detektálható.
+    Ez a backup trigger ha nincs testvér pozíció.
+    """
+    if tp_index >= len(deal["tp_levels"]):
+        return False
+
+    tp_price = deal["tp_levels"][tp_index]
+    action   = deal["action"]
+
+    # Lekérjük a legutóbbi tick-eket
+    ticks = mt5.copy_ticks_from(
+        config.SYMBOL,
+        int(datetime.fromisoformat(deal["time"]).timestamp()),
+        50000,
+        mt5.COPY_TICKS_ALL
+    )
+    if ticks is None or len(ticks) == 0:
+        # Ha nem érhető el history, ár alapú ellenőrzés
+        tick = mt5.symbol_info_tick(config.SYMBOL)
+        if tick is None:
+            return False
+        current = tick.bid if action == "SELL" else tick.ask
+        return (action == "SELL" and current <= tp_price) or \
+               (action == "BUY"  and current >= tp_price)
+
+    # Végigmegyünk a tickeken
+    for tick in ticks:
+        price = tick[2]  # bid
+        if action == "SELL" and price <= tp_price:
+            return True
+        if action == "BUY" and price >= tp_price:
+            return True
+    return False
+
+
 def _get_sister_deals(ticket: int) -> list[dict]:
     """Visszaadja az összetartozó pozíciókat."""
     for signal_id, tickets in _signal_groups.items():
@@ -221,7 +214,7 @@ def _get_sister_deals(ticket: int) -> list[dict]:
 async def _apply_sl_move(deal: dict, triggered_tp_index: int):
     """
     SL mozgatást hajt végre a triggered_tp_index alapján.
-    triggered_tp_index: melyik TP szint lett elérve (0-tól indexelve, pl. 2=TP3)
+    triggered_tp_index: melyik TP szint lett elérve (pl. 2=TP3, 3=TP4, 4=TP5)
     """
     ticket = deal["ticket"]
     label  = _magic_label(deal["magic"])
@@ -241,15 +234,16 @@ async def _apply_sl_move(deal: dict, triggered_tp_index: int):
     sl_label   = "Entry" if sl_source == "entry" else f"TP{int(sl_source)+1}"
     tp_name    = f"TP{triggered_tp_index+1}"
 
+    # TP marad az eredeti (a pozíció saját TP-je zárja)
     new_tp = deal["tp"]
 
     ok = modify_position(ticket, new_sl, new_tp, config.SYMBOL)
     if ok:
-        deal["sl"]                = new_sl
-        deal["next_watch_tp"]     = next_watch
-        deal["mozgo_sl_active"]   = True
+        deal["sl"]              = new_sl
+        deal["next_watch_tp"]   = next_watch   # következő figyelendő TP szint
+        deal["mozgo_sl_active"] = True
         deal["last_triggered_tp"] = triggered_tp_index
-        _active_deals[ticket]     = deal
+        _active_deals[ticket]   = deal
         _save_positions()
         logger.info(f"✅ SL mozgatva #{ticket}: {sl_label} ({new_sl}) | Következő figyelés: TP{next_watch+1}")
         await send_notification(
@@ -309,31 +303,36 @@ async def _check_pending(ticket: int, deal: dict):
 # ── Aktív pozíció ellenőrzés ──────────────────────────────────────────────────
 
 async def _check_deal(ticket: int, deal: dict):
-    label  = _magic_label(deal["magic"])
-    magic  = deal["magic"]
-    magics = _get_all_magics()
-
-    elso_tp     = getattr(config, 'SL_MOZGAS_ELSO_TP', 3)
-    elso_tp_idx = elso_tp - 1  # 0-tól indexelve
+    label     = _magic_label(deal["magic"])
+    magic     = deal["magic"]
+    pos1_magic = getattr(config, 'POS1_MAGIC', None)
+    pos2_magic = getattr(config, 'POS2_MAGIC', None)
+    pos3_magic = getattr(config, 'POS3_MAGIC', None)
 
     # ── Pozíció lezárult? ────────────────────────────────────────────────────
     if not is_position_open(ticket):
         logger.info(f"Pozíció zárul: #{ticket} ({label})")
 
-        # Ha mozgó SL be van kapcsolva és a pozíció TP-n zárt →
-        # triggereljük a testvér pozíciókat a megfelelő TP szinten
-        if config.MOZGO_SL_ENABLED and _was_closed_at_tp(ticket):
-            pozicio_tp_idx = _get_pozicio_tp_index(magic)
-            logger.info(f"📍 {label} TP-n zárt (TP{pozicio_tp_idx+1}) → testvér SL mozgatás")
-            for sister in _get_sister_deals(ticket):
-                sister_rules = get_sl_rules(sister["magic"])
-                last = sister.get("last_triggered_tp", -1)
-                # Csak akkor triggereljük ha ez a TP szint még nem volt triggerlve
-                # és a testvér pozíciónak van szabálya erre a szintre
-                if pozicio_tp_idx in sister_rules and last < pozicio_tp_idx:
-                    await _apply_sl_move(sister, triggered_tp_index=pozicio_tp_idx)
-        elif config.MOZGO_SL_ENABLED:
-            logger.info(f"{label} SL-en/manuálisan zárt — mozgó SL nem aktiválódik")
+        # Ha POS1 TP-n zárt → triggereljük a testvér pozíciók TP3 SL mozgatását
+        if config.MOZGO_SL_ENABLED and magic == pos1_magic:
+            if _was_closed_at_tp(ticket):
+                logger.info(f"📍 POS1 (TP3) TP-n zárt → testvér SL mozgatás (TP3 trigger)")
+                for sister in _get_sister_deals(ticket):
+                    last = sister.get("last_triggered_tp", -1)
+                    if last < 2:  # TP3 még nem volt triggerlve
+                        await _apply_sl_move(sister, triggered_tp_index=2)
+            else:
+                logger.info(f"POS1 SL-en/manuálisan zárt — mozgó SL nem aktiválódik")
+
+        # Ha POS2 TP-n zárt → triggereljük POS3 TP5 SL mozgatását
+        if config.MOZGO_SL_ENABLED and magic == pos2_magic:
+            if _was_closed_at_tp(ticket):
+                logger.info(f"📍 POS2 (TP5) TP-n zárt → POS3 SL mozgatás (TP5 trigger)")
+                for sister in _get_sister_deals(ticket):
+                    if sister["magic"] == pos3_magic:
+                        last = sister.get("last_triggered_tp", -1)
+                        if last < 4:  # TP5 még nem volt triggerlve
+                            await _apply_sl_move(sister, triggered_tp_index=4)
 
         await send_notification(
             f"🏁 <b>Pozíció lezárult</b>\n"
@@ -348,22 +347,28 @@ async def _check_deal(ticket: int, deal: dict):
     if not config.MOZGO_SL_ENABLED:
         return
 
-    # ── Ár alapú figyelés (backup + önálló működés) ──────────────────────────
+    # POS1 esetén nincs ár figyelés — azt a zárás triggeri
+    if magic == pos1_magic:
+        return
+
+    # ── POS2 és POS3: ár alapú figyelés (backup + önálló működés) ────────────
     rules = get_sl_rules(magic)
     if not rules:
         return
 
+    # Meghatározzuk melyik TP szintet kell most figyelni
     last_triggered = deal.get("last_triggered_tp", -1)
-    next_watch     = deal.get("next_watch_tp", elso_tp_idx)
+    next_watch     = deal.get("next_watch_tp", 2)  # alapból TP3-tól indul
 
     if next_watch not in rules:
         return  # Nincs több SL mozgatás
 
+    # Ellenőrizzük az árat
     tick = mt5.symbol_info_tick(config.SYMBOL)
     if tick is None:
         return
 
-    current_price  = tick.bid if deal["action"] == "SELL" else tick.ask
+    current_price = tick.bid if deal["action"] == "SELL" else tick.ask
     watch_tp_price = deal["tp_levels"][next_watch] if next_watch < len(deal["tp_levels"]) else None
 
     if watch_tp_price is None:
