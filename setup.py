@@ -204,10 +204,59 @@ def main():
     else:
         settings["SL_MOZGAS_ELSO_TP"] = 3  # alapértelmezett, de nem aktív
 
-    # ── 4. NAPI VESZTESÉG LIMIT ───────────────────────────────────────────────
+    # ── 4. ENTRY ZÓNA BŐVÍTÉS ─────────────────────────────────────────────────
     clear()
     print_header()
-    print("4. lépés: Napi veszteség limit")
+    print("4. lépés: Entry zóna bővítés")
+    print("-" * 55)
+    print()
+    print("  Ha mire a jel megérkezik az ár már kicsúszott a belépési")
+    print("  zónából, alapból a bot nem lép be (lejár a függő megbízás).")
+    print()
+    print("  A bővítés aszimmetrikusan kiterjeszti a zónát a kereskedés")
+    print("  irányába, hogy ilyenkor is beszállhass:")
+    print()
+    print("  Példa (bővítés = 3 USD):")
+    print("    BUY jel 4750-4755  →  elfogadott zóna: 4750 - 4758")
+    print("    SELL jel 4750-4755 →  elfogadott zóna: 4747 - 4755")
+    print()
+    print("  Ha a bővített részben érkezik a jel, AZONNAL piaci order nyílik.")
+    print()
+
+    bovites_ok = kerd_igen_nem("  Szeretnél entry zóna bővítést? (i/n): ")
+    settings["ENTRY_ZONA_BOVITES_ENABLED"] = bovites_ok
+
+    if bovites_ok:
+        print()
+        print("  Ajánlott: 2-5 USD (GOLD instrumentumnál)")
+        print()
+        bovites_usd = kerd_float("  Bővítés mérete USD-ben (pl. 3.0): ", 0.1, 50.0)
+        settings["ENTRY_ZONA_BOVITES_USD"] = bovites_usd
+
+        clear()
+        print_header()
+        print("  Entry zóna történet ellenőrzés")
+        print("-" * 55)
+        print()
+        print("  A bővítés csak akkor fog belépni, ha az ár az elmúlt X")
+        print("  percben valóban JÁRT az eredeti zónában.")
+        print()
+        print("  Így kiszűröd azokat a jeleket, ahol az ár sosem volt ott")
+        print("  (pl. nagy hírre elmegy egyből, és csak bőven kívül érkezik a jel).")
+        print()
+        print("  Ajánlott: 5 perc")
+        print("  Szigorúbb: 3 perc | Megengedőbb: 10 perc")
+        print()
+        tortenet_perc = kerd_int("  Visszanézendő idő percben (1-60): ", 1, 60)
+        settings["ENTRY_ZONA_TORTENET_PERC"] = tortenet_perc
+    else:
+        settings["ENTRY_ZONA_BOVITES_USD"]   = 0.0
+        settings["ENTRY_ZONA_TORTENET_PERC"] = 5
+
+    # ── 5. NAPI VESZTESÉG LIMIT ───────────────────────────────────────────────
+    clear()
+    print_header()
+    print("5. lépés: Napi veszteség limit")
     print("-" * 55)
     print()
     print("  Ha a nap folyamán a bot ennyit veszít, automatikusan")
@@ -223,10 +272,10 @@ def main():
     else:
         settings["DAILY_LOSS_LIMIT_PCT"] = 0.0
 
-    # ── 5. MAX NAPI KERESKEDÉS ────────────────────────────────────────────────
+    # ── 6. MAX NAPI KERESKEDÉS ────────────────────────────────────────────────
     clear()
     print_header()
-    print("5. lépés: Napi maximum kereskedések száma")
+    print("6. lépés: Napi maximum kereskedések száma")
     print("-" * 55)
     print()
     print("  0 = korlátlan")
@@ -242,10 +291,10 @@ def main():
     settings["TRADE_HOUR_END"]      = 24
 
 
-    # ── 6. TECHNIKAI SZŰRŐK ───────────────────────────────────────────────────
+    # ── 7. TECHNIKAI SZŰRŐK ───────────────────────────────────────────────────
     clear()
     print_header()
-    print("6. lépés: Technikai szűrők (opcionális)")
+    print("7. lépés: Technikai szűrők (opcionális)")
     print("-" * 55)
     print()
     print("  A szűrők megerősítik a Telegram jelzést indikátorokkal.")
@@ -402,6 +451,11 @@ def main():
 
     print()
     print(f"  Mozgó SL:         {'igen' if mozgo_sl else 'nem'}")
+    if settings.get("ENTRY_ZONA_BOVITES_ENABLED"):
+        print(f"  Entry bővítés:    +{settings['ENTRY_ZONA_BOVITES_USD']} USD "
+              f"(csak ha {settings['ENTRY_ZONA_TORTENET_PERC']} percen belül járt a zónában)")
+    else:
+        print(f"  Entry bővítés:    kikapcsolva")
     if settings["DAILY_LOSS_LIMIT_PCT"] > 0:
         print(f"  Napi limit:       {settings['DAILY_LOSS_LIMIT_PCT']}%")
     else:

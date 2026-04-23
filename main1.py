@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient, events
 
 import config
-from signal_parser import parse_signal
+from gold_pro_trader_parser import parse_signal, GoldProUpdateSignal
 from mt5_trader import connect as mt5_connect, disconnect as mt5_disconnect
 from mt5_trader import place_order, set_notifier as mt5_set_notifier, close_all_positions
 from position_manager import register_deal, run_monitor

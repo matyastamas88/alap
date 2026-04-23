@@ -344,8 +344,106 @@ def get_current_price(symbol: str, action: str) -> float | None:
     return tick.ask if action == "BUY" else tick.bid
 
 
-def _is_in_entry_zone(current_price, signal) -> bool:
-    return signal.entry_low <= current_price <= signal.entry_high
+def _price_touched_zone_recently(signal, minutes_back: int, symbol: str) -> bool:
+    """
+    Megvizsgálja, hogy az elmúlt X percben érintette-e az ár az eredeti entry zónát.
+    M1 (1 perces) gyertyák high/low értékeit használja.
+
+    Returns:
+        True  — az ár járt a zónában (vagy érintette a széleit)
+        False — az ár sosem volt a zónában ebben az időablakban
+                (ekkor a bővítés NEM érvényesül)
+    """
+    import datetime as _dt
+    now = _dt.datetime.now()
+    from_time = now - _dt.timedelta(minutes=minutes_back)
+
+    # copy_rates_range M1 gyertyákkal — UTC idő kell az MT5-nek
+    rates = mt5.copy_rates_range(
+        symbol,
+        mt5.TIMEFRAME_M1,
+        from_time,
+        now,
+    )
+
+    if rates is None or len(rates) == 0:
+        logger.warning(
+            f"Entry zóna történet ellenőrzés: nincs elérhető M1 adat az elmúlt "
+            f"{minutes_back} percből ({symbol}). Óvatosan: bővítés NEM alkalmazva."
+        )
+        return False
+
+    # Bármelyik gyertya érintette-e a zónát?
+    # (gyertya high >= zóna alsó) ÉS (gyertya low <= zóna felső) → overlap
+    low  = signal.entry_low
+    high = signal.entry_high
+
+    for r in rates:
+        if r['high'] >= low and r['low'] <= high:
+            logger.info(
+                f"Entry zóna történet: az ár érintette a {low}-{high} zónát "
+                f"az elmúlt {minutes_back} percben ({len(rates)} M1 gyertya vizsgálva)."
+            )
+            return True
+
+    logger.info(
+        f"Entry zóna történet: az ár NEM érintette a {low}-{high} zónát "
+        f"az elmúlt {minutes_back} percben ({len(rates)} M1 gyertya) — "
+        f"bővítés kikapcsolva erre a jelre."
+    )
+    return False
+
+
+def _is_in_entry_zone(current_price, signal, cfg=None) -> bool:
+    """
+    Visszaadja, hogy a jelenlegi ár a belépési zónában van-e.
+
+    Ha az ENTRY_ZONA_BOVITES_ENABLED be van kapcsolva a configban, a zóna
+    aszimmetrikusan ki van terjesztve a kereskedés "rossz" oldalára:
+      - BUY esetén a felső határ felfelé tolódik (magasabb ár is elfogadható)
+      - SELL esetén az alsó határ lefelé tolódik (alacsonyabb ár is elfogadható)
+    A "jó" oldal nem változik (jobb ár mindig OK).
+
+    A bővítés CSAK akkor érvényesül, ha az ár az elmúlt
+    ENTRY_ZONA_TORTENET_PERC percben érintette az eredeti zónát (M1 high/low).
+    """
+    low  = signal.entry_low
+    high = signal.entry_high
+
+    # Először ellenőrizzük az eredeti zónát — ha benne van, szükségtelen a bővítés
+    if low <= current_price <= high:
+        return True
+
+    # Ha nincs bővítés engedélyezve, itt állunk meg
+    if cfg is None or not getattr(cfg, 'ENTRY_ZONA_BOVITES_ENABLED', False):
+        return False
+
+    bovites = getattr(cfg, 'ENTRY_ZONA_BOVITES_USD', 0.0)
+    if bovites <= 0:
+        return False
+
+    # Bővített határ a kereskedés irányába
+    if signal.action == "BUY":
+        extended_high = high + bovites
+        if not (low <= current_price <= extended_high):
+            return False
+    elif signal.action == "SELL":
+        extended_low = low - bovites
+        if not (extended_low <= current_price <= high):
+            return False
+    else:
+        return False
+
+    # Az ár a bővített zónában van — most ellenőrizzük a történetet
+    minutes_back = int(getattr(cfg, 'ENTRY_ZONA_TORTENET_PERC', 5))
+    symbol = getattr(cfg, 'SYMBOL', None)
+    if symbol is None:
+        logger.warning("Entry zóna bővítés: cfg.SYMBOL nincs beállítva, történet nem ellenőrizhető.")
+        return False
+
+    if _price_touched_zone_recently(signal, minutes_back, symbol):
+        return True
+    return False
 
 
 # ── Megbízás küldése ──────────────────────────────────────────────────────────
@@ -372,17 +470,6 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
         if not (start <= now_hour < end):
             return None, f"Kereskedési időablakon kívül ({now_hour}:00, ablak: {start}:00-{end}:00)"
 
-    # Automata lot számítás ha be van kapcsolva
-    if getattr(cfg, 'AUTO_LOT', False):
-        risk_map = {
-            getattr(cfg, 'POS1_MAGIC', None): getattr(cfg, 'POS1_RISK_PCT', 1.0),
-            getattr(cfg, 'POS2_MAGIC', None): getattr(cfg, 'POS2_RISK_PCT', 1.0),
-            getattr(cfg, 'POS3_MAGIC', None): getattr(cfg, 'POS3_RISK_PCT', 1.0),
-        }
-        risk_pct = risk_map.get(magic, 1.0)
-        lot_size = calculate_lot(cfg, risk_pct, signal.sl, signal.entry_mid)
-        logger.info(f"Automata lot: {lot_size} (magic={magic}, kockázat={risk_pct}%)")
-
     if len(signal.tp_levels) <= tp_index:
         err = f"Nincs elég TP szint (kell: {tp_index+1}, van: {len(signal.tp_levels)})"
         logger.error(err)
@@ -392,8 +479,36 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
     if current_price is None:
         return None, f"Nem sikerült lekérni az aktuális árat ({cfg.SYMBOL})"
 
-    in_zone   = _is_in_entry_zone(current_price, signal)
+    in_zone   = _is_in_entry_zone(current_price, signal, cfg)
     entry_mid = signal.entry_mid
+
+    # Log-olás, ha a bővítés miatt van belépés a kiterjesztett zónában
+    kiterjesztett_belepes = False
+    if in_zone and getattr(cfg, 'ENTRY_ZONA_BOVITES_ENABLED', False):
+        bovites = getattr(cfg, 'ENTRY_ZONA_BOVITES_USD', 0.0)
+        if bovites > 0:
+            kiterjesztett_belepes = (
+                (signal.action == "BUY" and current_price > signal.entry_high) or
+                (signal.action == "SELL" and current_price < signal.entry_low)
+            )
+            if kiterjesztett_belepes:
+                logger.info(
+                    f"Entry zóna bővítés ({signal.action}): ár {current_price} kívül az eredeti "
+                    f"{signal.entry_low}-{signal.entry_high} zónán, de a +{bovites} USD bővítésen belül."
+                )
+
+    # Automata lot számítás (AUTO_LOT) — kiterjesztett belépésnél a valós piaci árral
+    if getattr(cfg, 'AUTO_LOT', False):
+        risk_map = {
+            getattr(cfg, 'POS1_MAGIC', None): getattr(cfg, 'POS1_RISK_PCT', 1.0),
+            getattr(cfg, 'POS2_MAGIC', None): getattr(cfg, 'POS2_RISK_PCT', 1.0),
+            getattr(cfg, 'POS3_MAGIC', None): getattr(cfg, 'POS3_RISK_PCT', 1.0),
+        }
+        risk_pct = risk_map.get(magic, 1.0)
+        # Kiterjesztett belépésnél a valós piaci ár a referencia a kockázatszámításhoz
+        lot_ref_price = current_price if kiterjesztett_belepes else signal.entry_mid
+        lot_size = calculate_lot(cfg, risk_pct, signal.sl, lot_ref_price)
+        logger.info(f"Automata lot: {lot_size} (magic={magic}, kockázat={risk_pct}%, ref ár: {lot_ref_price})")
 
     # ── TP validáció: SELL→TP az ár alatt, BUY→TP az ár felett ──────────────
     ref_price = entry_mid  # limit megbízásnál az entry mid a belépési ár
