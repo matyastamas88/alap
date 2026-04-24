@@ -674,6 +674,40 @@ async def run_bot():
     if config.MOZGO_SL_ENABLED:
         settings_list.append(f"📍 SL mozog: TP{elso_tp}-től")
 
+    # ── Entry zóna bővítés ───────────────────────────────────────────────────
+    if getattr(config, 'ENTRY_ZONA_BOVITES_ENABLED', False):
+        bovites = getattr(config, 'ENTRY_ZONA_BOVITES_USD', 0)
+        tortenet = getattr(config, 'ENTRY_ZONA_TORTENET_PERC', 5)
+        settings_list.append(
+            f"📏 Entry zóna bővítés: <b>BE</b> (+{bovites} USD, {tortenet} perc visszanézés)"
+        )
+    else:
+        settings_list.append(f"📏 Entry zóna bővítés: <b>KI</b>")
+
+    # ── Technikai szűrők ─────────────────────────────────────────────────────
+    aktiv_szurok = getattr(config, 'AKTIV_SZUROK', [])
+    szuro_config = getattr(config, 'SZURO_CONFIG', {})
+    if aktiv_szurok:
+        # Kulcs → felhasználóbarát név
+        SZURO_NEVEK = {
+            "ema_sma":   "EMA/SMA",
+            "macd":      "MACD",
+            "rsi":       "RSI",
+            "bollinger": "Bollinger",
+            "atr_sl":    "ATR SL",
+            "candle":    "Gyertya",
+            "adx":       "ADX",
+            "volume":    "Volume",
+        }
+        szuro_leiras = []
+        for szuro_key in aktiv_szurok:
+            nev = SZURO_NEVEK.get(szuro_key, szuro_key)
+            tf = szuro_config.get(f"{szuro_key}_tf", "?")
+            szuro_leiras.append(f"{nev} {tf}")
+        settings_list.append(f"🎯 Szűrők: <b>{', '.join(szuro_leiras)}</b>")
+    else:
+        settings_list.append(f"🎯 Szűrők: <b>nincs</b>")
+
     settings_info = "\n" + "\n".join(settings_list) if settings_list else "\n<i>Nincs aktív beállítás.</i>"
 
     await send_notification(

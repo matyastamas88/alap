@@ -440,7 +440,7 @@ async def _check_deal(ticket: int, deal: dict):
         await send_notification(
             f"🏁 <b>Pozíció lezárult — {zaras_status}</b>\n"
             f"Forrás: <b>{label}</b>\n"
-            f"Ticket: #{ticket}\n"
+            f"Ticket: #{ticket} | Magic: <code>{magic}</code>\n"
             f"Zárási ár: {zaras_ar} | Eredmény: {eredmeny_jel}{eredmeny_usd:.2f} USD\n"
             f"Időtartam: {idotartam:.0f} perc"
         )
