@@ -367,6 +367,12 @@ async def process_signal(signal):
         return
 
     first_magic = _get_first_magic()
+
+    # ── 1. FÁZIS: gyors pozíciónyitás ─────────────────────────────────────────
+    # Először lerakjuk az összes pozíciót egymás után a legkisebb késleltetéssel.
+    # A telegram értesítéseket és sheets naplózást UTÁNA, háttérben intézzük,
+    # hogy ne csússzon az ár a pozíciók között.
+    nyitasi_eredmenyek = []  # (deal, error, full_label, magic) tuple-ök
     for lot, magic, tp_index, pos_label in poziciok:
         deal, error = place_order(
             signal, config,
@@ -375,20 +381,46 @@ async def process_signal(signal):
             tp_index=tp_index,
         )
         full_label = f"{LABEL} {pos_label}"
+        nyitasi_eredmenyek.append((deal, error, full_label, magic))
+
+        # register_deal gyors (memória-nyilvántartás), kell azonnal
+        # hogy a monitor figyelje amint megnyílt
         if deal:
             register_deal(deal)
-            if deal.get("is_pending"):
-                await notify_pending_opened(deal, label=full_label)
-            else:
-                await notify_trade_opened(deal, label=full_label)
-            log_trade(deal)
-            # Csak az első pozíció nyitásakor növeljük a számlálót
+            # Napi számláló is gyors, nem érdemes háttérbe tenni
             if magic == first_magic:
                 _napi_kereskedes_szam += 1
                 logger.info(f"Napi kereskedés számláló: {_napi_kereskedes_szam}")
-        else:
-            await notify_trade_failed(error, label=full_label)
-            log_skipped_signal(signal, error)
+
+    # ── 2. FÁZIS: lassú utómunkák aszinkron ──────────────────────────────────
+    # Telegram értesítés + sheets naplózás a háttérben, nem blokkolja a folyást.
+    async def _posztprocessz():
+        for deal, error, full_label, _magic in nyitasi_eredmenyek:
+            if deal:
+                try:
+                    if deal.get("is_pending"):
+                        await notify_pending_opened(deal, label=full_label)
+                    else:
+                        await notify_trade_opened(deal, label=full_label)
+                except Exception as e:
+                    logger.error(f"[{full_label}] Telegram értesítés hiba: {e}")
+                try:
+                    # log_trade szinkron blokkolt hívás → thread poolba tesszük
+                    # hogy ne blokkolja az event loop-ot
+                    await asyncio.to_thread(log_trade, deal)
+                except Exception as e:
+                    logger.error(f"[{full_label}] Sheets naplózás hiba: {e}")
+            else:
+                try:
+                    await notify_trade_failed(error, label=full_label)
+                except Exception as e:
+                    logger.error(f"[{full_label}] Telegram hiba értesítés hiba: {e}")
+                try:
+                    await asyncio.to_thread(log_skipped_signal, signal, error)
+                except Exception as e:
+                    logger.error(f"[{full_label}] Skipped signal naplózás hiba: {e}")
+
+    asyncio.create_task(_posztprocessz())
 
 
 # ── Jelzés feldolgozó helper ──────────────────────────────────────────────────
