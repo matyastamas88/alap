@@ -139,8 +139,12 @@ def parse_signal(text: str, default_sl_usd: float = 0) -> TradeSignal | None:
 
     # ── TP szintek ───────────────────────────────────────────────────────────
     # "open" szöveget kihagyja
+    # Felismeri: TP, TP1, TP2..., Take Profit, Take Profit 1, TAKE PROFIT.
     tp_levels = []
-    tp_matches = re.findall(r'TP\s*\d*[\s:\-•]*\s*(\d{3,5}(?:\.\d+)?|open)', text, re.IGNORECASE)
+    tp_matches = re.findall(
+        r'(?:TP|TAKE\s*PROFIT)\s*\d*[\s:\-•\.]*\s*(\d{3,5}(?:\.\d+)?|open)',
+        text, re.IGNORECASE
+    )
     for v in tp_matches:
         if v.lower() == "open":
             continue
@@ -155,7 +159,7 @@ def parse_signal(text: str, default_sl_usd: float = 0) -> TradeSignal | None:
     sl_was_auto = False
 
     sl_match = re.search(
-        r'(?:stop\s*loss(?:\s*\([^)]*\))?|\bsl\b)\s*[:\-•]*\s*(\d{3,5}(?:\.\d+)?)',
+        r'(?:stop\s*loss(?:\s*\([^)]*\))?|\bsl\b)\s*[:\-•\.]*\s*(\d{3,5}(?:\.\d+)?)',
         text, re.IGNORECASE
     )
     if sl_match:
