@@ -210,6 +210,49 @@ def register_deal(deal: dict):
     _save_positions()
 
 
+# ── Active trigger támogatás — pending lekérdezés és csere ────────────────────
+
+def get_pending_deals_snapshot() -> dict[int, dict]:
+    """
+    Visszaad egy másolatot a jelenlegi pending deal-ekről.
+    Az active_handler használja, hogy lássa milyen pending vár ACTIVE triggerre.
+    """
+    return dict(_pending_deals)
+
+
+def replace_pending_with_market(old_ticket: int, new_deal: dict):
+    """
+    Egy pending deal-t lecserél egy market deal-re (ACTIVE trigger után).
+    A régi pending-et törli a tárolóból, és az új deal-t aktívként regisztrálja.
+
+    A signal_groups-ban is frissíti az azonosítót, hogy a testvér pozíció
+    kapcsolatok megmaradjanak (mozgó SL trigger működjön).
+    """
+    new_ticket = new_deal["ticket"]
+    signal_id  = new_deal.get("signal_id", "")
+
+    # Régi pending törlése
+    if old_ticket in _pending_deals:
+        del _pending_deals[old_ticket]
+        logger.info(f"🔄 Pending törölve a tárolóból: #{old_ticket}")
+
+    # Új market deal regisztrálása aktív listába
+    _active_deals[new_ticket] = new_deal
+    logger.info(f"✅ Market deal regisztrálva: #{new_ticket} | {_magic_label(new_deal['magic'])}")
+
+    # signal_groups frissítése: régi ticket cseréje újra
+    if signal_id and signal_id in _signal_groups:
+        if old_ticket in _signal_groups[signal_id]:
+            idx = _signal_groups[signal_id].index(old_ticket)
+            _signal_groups[signal_id][idx] = new_ticket
+        elif new_ticket not in _signal_groups[signal_id]:
+            _signal_groups[signal_id].append(new_ticket)
+    elif signal_id:
+        _signal_groups[signal_id] = [new_ticket]
+
+    _save_positions()
+
+
 # ── History alapú detektálás ──────────────────────────────────────────────────
 
 def _was_closed_at_tp(ticket: int) -> bool:

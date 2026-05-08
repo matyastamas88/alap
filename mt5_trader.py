@@ -634,6 +634,9 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
         "is_pending":     not in_zone,
         "is_market":      in_zone,     # True = azonnali piaci belépés
         "time":           datetime.now().isoformat(),
+        # Eredeti entry zóna — az ACTIVE trigger használja csúszás ellenőrzésre
+        "entry_low":      signal.entry_low,
+        "entry_high":     signal.entry_high,
     }
 
     logger.info(

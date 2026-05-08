@@ -18,7 +18,10 @@ import config
 from signal_parser import parse_signal
 from mt5_trader import connect as mt5_connect, disconnect as mt5_disconnect
 from mt5_trader import place_order, set_notifier as mt5_set_notifier, close_all_positions
+from mt5_trader import get_current_price
 from position_manager import register_deal, run_monitor
+from position_manager import get_pending_deals_snapshot, replace_pending_with_market
+from active_handler import is_active_message, check_slippage, convert_pending_to_market
 from notifier import notify_trade_opened, notify_trade_failed, notify_pending_opened, send_notification
 from sheets_logger import log_trade, log_skipped_signal, init_on_startup as sheets_init
 from signal_filter import run_filters
@@ -423,6 +426,110 @@ async def process_signal(signal):
     asyncio.create_task(_posztprocessz())
 
 
+# ── Active trigger feldolgozás ────────────────────────────────────────────────
+
+async def process_active_trigger(text: str):
+    """
+    "Active" üzenet feldolgozása:
+      - megkeresi a legutóbbi pending megbízásokat
+      - ellenőrzi a csúszást
+      - ha minden OK, törli a pending-et és market order-t nyit helyette
+    """
+    global _trading_paused
+
+    # Pause ellenőrzés
+    if _trading_paused:
+        logger.info(f"[{LABEL}] ACTIVE üzenet érkezett, de a kereskedés szünetel — kihagyva.")
+        return
+
+    # Funkció be van-e kapcsolva?
+    if not getattr(config, 'ACTIVE_TRIGGER_ENABLED', False):
+        logger.info(f"[{LABEL}] ACTIVE üzenet érkezett, de ACTIVE_TRIGGER_ENABLED=False — kihagyva.")
+        return
+
+    pending = get_pending_deals_snapshot()
+    if not pending:
+        logger.info(f"[{LABEL}] ACTIVE üzenet érkezett, de nincs aktív pending megbízás — kihagyva.")
+        await send_notification(
+            f"ℹ️ <b>ACTIVE üzenet érkezett</b>\n"
+            f"Forrás: <b>{LABEL}</b>\n"
+            f"Nincs aktív pending megbízás — nincs mit aktiválni."
+        )
+        return
+
+    max_slip = getattr(config, 'ACTIVE_TRIGGER_MAX_SLIPPAGE_USD', 5.0)
+
+    logger.info(f"[{LABEL}] 🟢 ACTIVE trigger — {len(pending)} pending megbízás aktiválása...")
+    await send_notification(
+        f"🟢 <b>ACTIVE üzenet érkezett</b>\n"
+        f"Forrás: <b>{LABEL}</b>\n"
+        f"{len(pending)} pending megbízás aktiválása piaci áron...\n"
+        f"Max csúszás: {max_slip} USD"
+    )
+
+    sikeres, kihagyott, hiba = 0, 0, 0
+
+    for old_ticket, deal in pending.items():
+        action = deal.get("action")
+        magic  = deal.get("magic")
+
+        # Aktuális ár lekérése
+        current_price = get_current_price(config.SYMBOL, action)
+        if current_price is None:
+            logger.error(f"[{LABEL}] Ár lekérés sikertelen ACTIVE-hoz (#{old_ticket})")
+            hiba += 1
+            continue
+
+        # Csúszás ellenőrzés
+        ok, slip_msg = check_slippage(deal, current_price, max_slip)
+        logger.info(f"[{LABEL}] Csúszás #{old_ticket}: {slip_msg}")
+
+        if not ok:
+            kihagyott += 1
+            await send_notification(
+                f"⏭️ <b>ACTIVE — pozíció kihagyva csúszás miatt</b>\n"
+                f"Forrás: <b>{LABEL}</b>\n"
+                f"Ticket: #{old_ticket} (magic: {magic})\n"
+                f"{slip_msg}\n"
+                f"Aktuális ár: {current_price}"
+            )
+            continue
+
+        # Pending → Market konverzió
+        new_deal, error = convert_pending_to_market(deal, config, current_price)
+
+        if new_deal:
+            # Position manager-ben lecseréljük
+            replace_pending_with_market(old_ticket, new_deal)
+            sikeres += 1
+
+            await send_notification(
+                f"✅ <b>ACTIVE — pozíció megnyitva piaci áron</b>\n"
+                f"Forrás: <b>{LABEL}</b>\n"
+                f"Régi pending: #{old_ticket} → Új ticket: #{new_deal['ticket']}\n"
+                f"Magic: <code>{magic}</code>\n"
+                f"Ár: <b>{new_deal['price']}</b> | SL: {new_deal['sl']} | TP: {new_deal['tp']}\n"
+                f"{slip_msg}"
+            )
+
+            # Sheets naplózás (háttérben)
+            try:
+                asyncio.create_task(asyncio.to_thread(log_trade, new_deal))
+            except Exception as e:
+                logger.error(f"[{LABEL}] Sheets naplózás hiba ACTIVE-nál: {e}")
+        else:
+            hiba += 1
+            await send_notification(
+                f"❌ <b>ACTIVE — sikertelen</b>\n"
+                f"Forrás: <b>{LABEL}</b>\n"
+                f"Ticket: #{old_ticket} (magic: {magic})\n"
+                f"Hiba: {error}"
+            )
+
+    # Összesítés
+    logger.info(f"[{LABEL}] ACTIVE összesítés: {sikeres} sikeres, {kihagyott} kihagyva, {hiba} hiba")
+
+
 # ── Jelzés feldolgozó helper ──────────────────────────────────────────────────
 
 async def handle_message_text(text: str, source: str = "új"):
@@ -436,6 +543,15 @@ async def handle_message_text(text: str, source: str = "új"):
     if "close" in text.lower():
         logger.info(f"[{LABEL}] CLOSE parancs érkezett!")
         return "close"
+
+    # ── ACTIVE trigger ellenőrzés (parse_signal ELŐTT!) ──────────────────────
+    # Egy "Active ✅✅" üzenet nem signal formátumú, de aktiválja a pending
+    # megbízásokat (piaci belépés a már elment ár figyelembevételével).
+    active_keywords = getattr(config, 'ACTIVE_KEYWORDS', None)
+    if is_active_message(text, active_keywords):
+        logger.info(f"[{LABEL}] 🟢 ACTIVE üzenet felismerve: {text[:50]!r}")
+        asyncio.create_task(process_active_trigger(text))
+        return None
 
     signal = parse_signal(text, default_sl_usd=getattr(config, "DEFAULT_SL_USD", 0))
     if signal:
@@ -537,7 +653,14 @@ async def run_bot():
             logger.info(f"[{LABEL}] Szerkesztett jelzés feldolgozva: {signal.action} @ {signal.entry_mid}")
             asyncio.create_task(process_signal(signal))
         else:
-            logger.info(f"[{LABEL}] Szerkesztett üzenet — nem jelzés formátum, kihagyva.")
+            # ── ACTIVE trigger szerkesztett üzenetnél ────────────────────────
+            # Ha valaki utólag "Active"-re szerkesztett egy üzenetet, az is trigger
+            active_keywords = getattr(config, 'ACTIVE_KEYWORDS', None)
+            if is_active_message(text, active_keywords):
+                logger.info(f"[{LABEL}] 🟢 ACTIVE üzenet (szerkesztett) felismerve: {text[:50]!r}")
+                asyncio.create_task(process_active_trigger(text))
+            else:
+                logger.info(f"[{LABEL}] Szerkesztett üzenet — nem jelzés formátum, kihagyva.")
 
     # ── Parancs csoport figyelő ───────────────────────────────────────────────
     command_channel = getattr(config, 'COMMAND_CHANNEL', None)
