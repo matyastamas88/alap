@@ -518,8 +518,10 @@ class SetupApp:
         # Entry zona bovites
         self._szakasz_cim(f, "Entry zona bovites",
                           "Ha mire a jel megerkezik az ar mar kicsuszott a belepesi zonabol, "
-                          "ennyi USD-vel arrebb is lephessen be a bot. Aszimmetrikusan a kereskedes "
-                          "iranyaba bovit (BUY-nal felfele, SELL-nel lefele).")
+                          "ennyi USD-vel arrebb is lephessen be a bot. "
+                          "BUY-nal a felso hatarhoz adja hozza (pl. zona 4705-4710, bovites 2 USD → 4705-4712). "
+                          "SELL-nel az also hatarbol vonja le (pl. zona 4705-4710, bovites 2 USD → 4703-4710). "
+                          "Ha az ar a bovitett zonaban van → azonnali piaci belep. Ha tulment → eredeti limit.")
 
         sor = tk.Frame(f, bg="white")
         sor.pack(fill="x", padx=20, pady=10)
@@ -547,25 +549,10 @@ class SetupApp:
         tk.Label(sor, text="USD", bg="white", fg="#7f8c8d",
                  font=("Segoe UI", 9)).pack(side="left", padx=(5, 0))
 
-        # Tortenet perc
-        sor2 = tk.Frame(f, bg="white")
-        sor2.pack(fill="x", padx=20, pady=(0, 5))
-
-        tk.Label(sor2, text="    Visszanezendo ido:", bg="white",
-                 font=("Segoe UI", 9)).pack(side="left")
-
-        self.entry_tortenet_var = tk.StringVar(
-            value=str(self.settings.get("ENTRY_ZONA_TORTENET_PERC", 5)))
-        self.entry_tortenet_entry = ttk.Entry(sor2, textvariable=self.entry_tortenet_var,
-                                                width=8, font=("Segoe UI", 10))
-        self.entry_tortenet_entry.pack(side="left", padx=(28, 5))
-
-        tk.Label(sor2, text="perc", bg="white", fg="#7f8c8d",
-                 font=("Segoe UI", 9)).pack(side="left")
-
         tk.Label(
-            f, text=("  A bovites csak akkor ervenyes, ha az ar az utolso X percben jart az eredeti zonaban.\n"
-                     "  Igy kiszurodnek azok a jelek, ahol az ar sosem volt ott (pl. nagy hir miatt elment)."),
+            f, text=("  Pelda BUY (zona 4705-4710, bovites 2$): ha az ar 4710-4712 kozott van → azonnal belep.\n"
+                     "  Pelda SELL (zona 4705-4710, bovites 2$): ha az ar 4703-4705 kozott van → azonnal belep.\n"
+                     "  Ha az ar tulment a bovitett hataron is → eredeti limit megbizas (zona kozepere)."),
             bg="white", fg="#7f8c8d",
             font=("Segoe UI", 8), anchor="w", wraplength=720, justify="left"
         ).pack(fill="x", padx=20)
@@ -615,7 +602,6 @@ class SetupApp:
     def _frissit_entry_bov_aktiv(self):
         allapot = "normal" if self.entry_bov_var.get() else "disabled"
         self.entry_bov_entry.config(state=allapot)
-        self.entry_tortenet_entry.config(state=allapot)
 
     def _frissit_active_aktiv(self):
         allapot = "normal" if self.active_var.get() else "disabled"
@@ -888,13 +874,8 @@ class SetupApp:
                 s["ENTRY_ZONA_BOVITES_USD"] = float(self.entry_bov_usd_var.get())
             except ValueError:
                 raise ValueError("Entry zona bovites USD: szamnak kell lennie.")
-            try:
-                s["ENTRY_ZONA_TORTENET_PERC"] = int(self.entry_tortenet_var.get())
-            except ValueError:
-                s["ENTRY_ZONA_TORTENET_PERC"] = 5
         else:
             s["ENTRY_ZONA_BOVITES_USD"] = 0.0
-            s["ENTRY_ZONA_TORTENET_PERC"] = 5
 
         # ACTIVE
         s["ACTIVE_TRIGGER_ENABLED"] = self.active_var.get()
@@ -953,7 +934,6 @@ class SetupApp:
             updates = {
                 "ENTRY_ZONA_BOVITES_ENABLED": str(settings["ENTRY_ZONA_BOVITES_ENABLED"]),
                 "ENTRY_ZONA_BOVITES_USD":     str(settings["ENTRY_ZONA_BOVITES_USD"]),
-                "ENTRY_ZONA_TORTENET_PERC":   str(settings["ENTRY_ZONA_TORTENET_PERC"]),
                 "ACTIVE_TRIGGER_ENABLED":     str(settings["ACTIVE_TRIGGER_ENABLED"]),
                 "ACTIVE_TRIGGER_MAX_SLIPPAGE_USD": str(settings["ACTIVE_TRIGGER_MAX_SLIPPAGE_USD"]),
                 "IRANY_SZURO_PERC":           str(settings["IRANY_SZURO_PERC"]),

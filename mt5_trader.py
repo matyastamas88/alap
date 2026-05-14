@@ -344,21 +344,22 @@ def get_current_price(symbol: str, action: str) -> float | None:
     return tick.ask if action == "BUY" else tick.bid
 
 
-def _price_touched_zone_recently(signal, minutes_back: int, symbol: str) -> bool:
+def _price_crossed_zone_boundary(signal, minutes_back: int, symbol: str) -> bool:
     """
-    Megvizsgálja, hogy az elmúlt X percben érintette-e az ár az eredeti entry zónát.
-    M1 (1 perces) gyertyák high/low értékeit használja.
+    Megvizsgálja, hogy az elmúlt X percben átlépte-e az ár az entry zóna
+    rossz oldali határát (BUY: felső határ / SELL: alsó határ).
+
+    BUY esetén: volt-e olyan M1 gyertya amelynek HIGH-ja >= entry_high?
+    SELL esetén: volt-e olyan M1 gyertya amelynek LOW-ja <= entry_low?
 
     Returns:
-        True  — az ár járt a zónában (vagy érintette a széleit)
-        False — az ár sosem volt a zónában ebben az időablakban
-                (ekkor a bővítés NEM érvényesül)
+        True  — igen, átlépte a határt (bővítés alkalmazható)
+        False — nem lépte át (bővítés NEM alkalmazható)
     """
     import datetime as _dt
-    now = _dt.datetime.now()
+    now       = _dt.datetime.now()
     from_time = now - _dt.timedelta(minutes=minutes_back)
 
-    # copy_rates_range M1 gyertyákkal — UTC idő kell az MT5-nek
     rates = mt5.copy_rates_range(
         symbol,
         mt5.TIMEFRAME_M1,
@@ -368,81 +369,162 @@ def _price_touched_zone_recently(signal, minutes_back: int, symbol: str) -> bool
 
     if rates is None or len(rates) == 0:
         logger.warning(
-            f"Entry zóna történet ellenőrzés: nincs elérhető M1 adat az elmúlt "
-            f"{minutes_back} percből ({symbol}). Óvatosan: bővítés NEM alkalmazva."
+            f"Entry zóna határátlépés ellenőrzés: nincs M1 adat az elmúlt "
+            f"{minutes_back} percből ({symbol}) — bővítés NEM alkalmazva."
         )
         return False
 
-    # Bármelyik gyertya érintette-e a zónát?
-    # (gyertya high >= zóna alsó) ÉS (gyertya low <= zóna felső) → overlap
     low  = signal.entry_low
     high = signal.entry_high
 
-    for r in rates:
-        if r['high'] >= low and r['low'] <= high:
-            logger.info(
-                f"Entry zóna történet: az ár érintette a {low}-{high} zónát "
-                f"az elmúlt {minutes_back} percben ({len(rates)} M1 gyertya vizsgálva)."
-            )
-            return True
+    if signal.action == "BUY":
+        # Volt-e gyertya amelynek HIGH-ja elérte vagy meghaladta a felső határt?
+        for r in rates:
+            if r['high'] >= high:
+                logger.info(
+                    f"Entry zóna határátlépés (BUY): az elmúlt {minutes_back} percben "
+                    f"az ár elérte/átlépte a {high} felső határt "
+                    f"({len(rates)} M1 gyertya vizsgálva) — bővítés alkalmazható."
+                )
+                return True
+        logger.info(
+            f"Entry zóna határátlépés (BUY): az ár NEM érte el a {high} felső határt "
+            f"az elmúlt {minutes_back} percben — bővítés NEM alkalmazva."
+        )
+        return False
 
-    logger.info(
-        f"Entry zóna történet: az ár NEM érintette a {low}-{high} zónát "
-        f"az elmúlt {minutes_back} percben ({len(rates)} M1 gyertya) — "
-        f"bővítés kikapcsolva erre a jelre."
-    )
+    elif signal.action == "SELL":
+        # Volt-e gyertya amelynek LOW-ja elérte vagy az alá ment az alsó határnak?
+        for r in rates:
+            if r['low'] <= low:
+                logger.info(
+                    f"Entry zóna határátlépés (SELL): az elmúlt {minutes_back} percben "
+                    f"az ár elérte/átlépte a {low} alsó határt "
+                    f"({len(rates)} M1 gyertya vizsgálva) — bővítés alkalmazható."
+                )
+                return True
+        logger.info(
+            f"Entry zóna határátlépés (SELL): az ár NEM érte el a {low} alsó határt "
+            f"az elmúlt {minutes_back} percben — bővítés NEM alkalmazva."
+        )
+        return False
+
     return False
 
 
 def _is_in_entry_zone(current_price, signal, cfg=None) -> bool:
     """
-    Visszaadja, hogy a jelenlegi ár a belépési zónában van-e.
+    Meghatározza, hogy az aktuális ár alapján azonnali piaci belépés kell-e,
+    vagy limit megbízást kell feladni.
 
-    Ha az ENTRY_ZONA_BOVITES_ENABLED be van kapcsolva a configban, a zóna
-    aszimmetrikusan ki van terjesztve a kereskedés "rossz" oldalára:
-      - BUY esetén a felső határ felfelé tolódik (magasabb ár is elfogadható)
-      - SELL esetén az alsó határ lefelé tolódik (alacsonyabb ár is elfogadható)
-    A "jó" oldal nem változik (jobb ár mindig OK).
+    Teljes logika (BUY példával, zóna 4715–4720, bővítés 5$):
 
-    A bővítés CSAK akkor érvényesül, ha az ár az elmúlt
-    ENTRY_ZONA_TORTENET_PERC percben érintette az eredeti zónát (M1 high/low).
+      1. Ár 4715–4720 (eredeti zónában)
+         → Azonnali market order (True)
+
+      2. Ár 4715 alatt (jó irány, még nem ért oda)
+         → Limit megbízás 4717.5-re (False)
+
+      3. Ár 4720 felett (rossz irány, már túlment):
+         A) ENTRY_ZONA_BOVITES_ENABLED = False
+            → Limit megbízás 4717.5-re (False)
+         B) ENTRY_ZONA_BOVITES_ENABLED = True, bovites = 5$
+            - Ár 4720–4725 között ÉS az elmúlt X percben volt gyertya
+              amelynek HIGH >= 4720 (átlépte a zóna felső határát)
+              → Azonnali market order (True)
+            - Ár 4720–4725 között DE nem lépte át a határt az elmúlt X percben
+              → Limit megbízás 4717.5-re (False)
+            - Ár 4725 felett (túlment a bővítésen is)
+              → Limit megbízás 4717.5-re (False)
+
+    SELL esetén fordítva ugyanez (alsó határ és LOW vizsgálat).
     """
     low  = signal.entry_low
     high = signal.entry_high
 
-    # Először ellenőrizzük az eredeti zónát — ha benne van, szükségtelen a bővítés
+    # ── 1. Eredeti zónán belül → azonnali market order ───────────────────────
     if low <= current_price <= high:
+        logger.info(
+            f"Entry zóna: ár {current_price} az eredeti {low}–{high} zónában "
+            f"→ azonnali piaci belépés."
+        )
         return True
 
-    # Ha nincs bővítés engedélyezve, itt állunk meg
+    # ── 2. Jó irányban van (BUY: ár < low, SELL: ár > high) → limit ─────────
+    if signal.action == "BUY" and current_price < low:
+        logger.info(
+            f"Entry zóna (BUY): ár {current_price} a zóna ({low}–{high}) alatt "
+            f"→ limit megbízás {signal.entry_mid}-re."
+        )
+        return False
+    if signal.action == "SELL" and current_price > high:
+        logger.info(
+            f"Entry zóna (SELL): ár {current_price} a zóna ({low}–{high}) felett "
+            f"→ limit megbízás {signal.entry_mid}-re."
+        )
+        return False
+
+    # ── 3. Rossz irányba ment túl a zónán ────────────────────────────────────
+    # Ha nincs bővítés bekapcsolva → limit
     if cfg is None or not getattr(cfg, 'ENTRY_ZONA_BOVITES_ENABLED', False):
+        logger.info(
+            f"Entry zóna: ár {current_price} kívül a {low}–{high} zónán, "
+            f"bővítés kikapcsolva → limit megbízás {signal.entry_mid}-re."
+        )
         return False
 
     bovites = getattr(cfg, 'ENTRY_ZONA_BOVITES_USD', 0.0)
     if bovites <= 0:
+        logger.info(
+            f"Entry zóna: bővítés engedélyezve, de ENTRY_ZONA_BOVITES_USD = {bovites} "
+            f"→ limit megbízás {signal.entry_mid}-re."
+        )
         return False
 
-    # Bővített határ a kereskedés irányába
+    # ── 4. Bővítési sáv ellenőrzése ───────────────────────────────────────────
     if signal.action == "BUY":
         extended_high = high + bovites
-        if not (low <= current_price <= extended_high):
+        if current_price > extended_high:
+            logger.info(
+                f"Entry zóna bővítés (BUY): ár {current_price} meghaladja a bővített "
+                f"határt ({extended_high}) → limit megbízás {signal.entry_mid}-re."
+            )
             return False
+        # Ár a bővített sávban (high < current_price <= extended_high)
+        # Most ellenőrizzük, hogy az elmúlt X percben átlépte-e a felső határt
     elif signal.action == "SELL":
         extended_low = low - bovites
-        if not (extended_low <= current_price <= high):
+        if current_price < extended_low:
+            logger.info(
+                f"Entry zóna bővítés (SELL): ár {current_price} meghaladja a bővített "
+                f"határt ({extended_low}) → limit megbízás {signal.entry_mid}-re."
+            )
             return False
+        # Ár a bővített sávban (extended_low <= current_price < low)
     else:
         return False
 
-    # Az ár a bővített zónában van — most ellenőrizzük a történetet
-    minutes_back = int(getattr(cfg, 'ENTRY_ZONA_TORTENET_PERC', 5))
+    # ── 5. Történet ellenőrzés: átlépte-e a határt az elmúlt X percben? ──────
+    minutes_back = int(getattr(cfg, 'ENTRY_ZONA_TORTENET_PERC', 10))
     symbol = getattr(cfg, 'SYMBOL', None)
     if symbol is None:
-        logger.warning("Entry zóna bővítés: cfg.SYMBOL nincs beállítva, történet nem ellenőrizhető.")
+        logger.warning(
+            "Entry zóna bővítés: cfg.SYMBOL nincs beállítva — bővítés NEM alkalmazva."
+        )
         return False
 
-    if _price_touched_zone_recently(signal, minutes_back, symbol):
+    if _price_crossed_zone_boundary(signal, minutes_back, symbol):
+        logger.info(
+            f"Entry zóna bővítés ({signal.action}): ár {current_price} a bővített sávban "
+            f"ÉS az elmúlt {minutes_back} percben átlépte a határt → azonnali piaci belépés."
+        )
         return True
+
+    logger.info(
+        f"Entry zóna bővítés ({signal.action}): ár {current_price} a bővített sávban, "
+        f"DE az elmúlt {minutes_back} percben NEM lépte át a határt "
+        f"→ limit megbízás {signal.entry_mid}-re."
+    )
     return False
 
 
