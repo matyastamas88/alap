@@ -27,6 +27,23 @@ def set_notifier(send_fn):
     _notifier_send = send_fn
 
 
+# MT5 comment limit: a 'comment' mezo max 31 karakter lehet, csak ASCII,
+# es nem tartalmazhat szokozt/specialis karaktert - kulonben az order_send
+# (-2, 'Invalid "comment" argument') hibaval utasitja el a megbizast.
+MT5_COMMENT_MAXLEN = 31
+
+
+def _safe_comment(text: str) -> str:
+    """Biztonsagos MT5 comment: csak ASCII betuk/szamok, szokozok alahuzasra
+    cserelve, max 31 karakterre vagva."""
+    text = (text or "").strip()
+    # nem-ASCII karakterek (ekezet, emoji) eldobasa
+    text = text.encode("ascii", "ignore").decode("ascii")
+    # szokozok es egyeb nem alfanumerikus karakterek alahuzasra cserelve
+    text = "".join(c if (c.isalnum() or c in "_-") else "_" for c in text)
+    return text[:MT5_COMMENT_MAXLEN]
+
+
 def _notify_sync(msg: str):
     if _notifier_send:
         import asyncio
@@ -266,7 +283,7 @@ def close_all_positions(cfg, label: str = "") -> tuple[int, int]:
             "price":        price,
             "deviation":    cfg.SLIPPAGE,
             "magic":        pos.magic,
-            "comment":      f"Close_{label}",
+            "comment":      _safe_comment(f"Close_{label}"),
             "type_time":    mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -652,7 +669,7 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
             "tp":           tp_price,
             "deviation":    cfg.SLIPPAGE,
             "magic":        magic,
-            "comment":      f"Bot_{signal.action}_m{magic}",
+            "comment":      _safe_comment(f"Bot_{signal.action}_m{magic}"),
             "type_time":    mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -668,7 +685,7 @@ def place_order(signal, cfg, lot_size: float, magic: int, tp_index: int = 2) -> 
             "tp":           tp_price,
             "deviation":    cfg.SLIPPAGE,
             "magic":        magic,
-            "comment":      f"Bot_{signal.action}_m{magic}",
+            "comment":      _safe_comment(f"Bot_{signal.action}_m{magic}"),
             "type_time":    mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_RETURN,
         }
